@@ -12,10 +12,11 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <dirent.h>
 #include <sys/syscall.h>
 #include <sched.h>
 #include <errno.h>
@@ -67,6 +68,12 @@ static int turbo_auto(int on) {
 }
 // The KGSL property is device-wide and outlives the app, so the power control goes back to the governor when the app pauses or ends (front_android.c
 // on_pause, on_destroy, host_thread when the game ends itself); the next presents set it again. A device without KGSL (Mali, Xclipse) or one that refuses the ioctl is tried once and then left alone.
+//
+// Mali (Arm's driver, no KGSL) has no such property, but it does write its clock through devfreq: an Android kernel built with CONFIG_DEVFREQ_GOV_USERSPACE for the GPU
+// (MediaTek's and Samsung's usually are) has /sys/class/devfreq/<gpu>/userspace/{min_freq,max_freq}, and a write to both pins the GPU's clock (a Galaxy Tab A9, SM-X110,
+// Mali-G57 MC2: /sys/class/devfreq/13000000.mali). The highest clock is the top entry of available_frequencies. The write needs the device's root, so the attempt is made
+// once and logged: without it the GPU keeps its governor's clocks and the setting only says so. The pin is released when the app pauses or ends, as KGSL's is: the node's min
+// and max back to its table's ends, then the governor it had.
 static pthread_mutex_t g_turbo_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_turbo_on, g_turbo_dead;   // what was last set; the property could not be set
 static int turbo_set(int want) {
@@ -77,23 +84,85 @@ static int turbo_set(int want) {
     if (fd >= 0) close(fd);
     errno = err; return r;
 }
+// The GPU's devfreq node, once found: the Mali driver's own name, else the first devfreq device whose name holds "mali" or "gpu"
+static char g_df_dir[192];
+static const char *devfreq_gpu(void) {
+    static int tried; if (tried) return g_df_dir[0] ? g_df_dir : NULL; tried = 1;
+    DIR *d = opendir("/sys/class/devfreq"); if (!d) return NULL;
+    struct dirent *e; char best[192] = "";
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[256]; snprintf(p, sizeof p, "/sys/class/devfreq/%s/available_frequencies", e->d_name);
+        if (access(p, R_OK)) continue;
+        char low[64]; snprintf(low, sizeof low, "%s", e->d_name); for (char *q = low; *q; q++) *q = (char)tolower((unsigned char)*q);
+        int hit = strstr(low, "mali") != NULL;   // (a MediaTek node is 13000000.mali; an Exynos one g3d)
+        if (hit || !best[0] || strstr(low, "gpu")) snprintf(best, sizeof best, "/sys/class/devfreq/%s", e->d_name);
+        if (hit) break;
+    }
+    closedir(d); snprintf(g_df_dir, sizeof g_df_dir, "%s", best);
+    return g_df_dir[0] ? g_df_dir : NULL;
+}
+static int devfreq_read(const char *dir, const char *file, char *b, size_t n) {
+    char p[256]; snprintf(p, sizeof p, "%s/%s", dir, file); FILE *f = fopen(p, "r"); if (!f) return -1;
+    size_t k = fread(b, 1, n - 1, f); fclose(f); b[k] = 0; return (int)k;
+}
+static int devfreq_write(const char *dir, const char *file, const char *v) {
+    char p[256]; snprintf(p, sizeof p, "%s/%s", dir, file); FILE *f = fopen(p, "w"); if (!f) return -1;
+    int r = fprintf(f, "%s", v) < 0 ? -1 : 0; if (fclose(f)) r = -1; return r;
+}
+// The governor the pin put aside, so the GPU's own clock control comes back when the app pauses or ends: the node before it was touched
+static char g_df_gov[64];
+static int turbo_set_devfreq(int want) {
+    const char *dir = devfreq_gpu(); if (!dir) { errno = ENOENT; return -1; }
+    char gov[64]; if (devfreq_read(dir, "governor", gov, sizeof gov) <= 0) return -1;
+    gov[strcspn(gov, "\n")] = 0;
+    if (!g_df_gov[0]) snprintf(g_df_gov, sizeof g_df_gov, "%s", gov);
+    if (want) {
+        if (strcmp(gov, "userspace")) {   // (userspace, then a min and a max: the other governors take no min / max)
+            if (devfreq_write(dir, "governor", "userspace")) return -1;
+            static int said; if (!said++) LOG("[perf] DM_GPU_TURBO: the GPU's devfreq governor was %s: userspace takes its clock (needs root)", gov);
+        }
+        char b[4096]; if (devfreq_read(dir, "available_frequencies", b, sizeof b) <= 0) return -1;
+        long high = 0;   // (the table is ascending: its last entry is the highest clock)
+        for (char *t = strtok(b, " \n"); t; t = strtok(NULL, " \n")) { char *end; long f = strtol(t, &end, 10); if (end != t && f > high) high = f; }
+        if (!high) { errno = EINVAL; return -1; }
+        char v[32]; snprintf(v, sizeof v, "%ld", high);
+        if (devfreq_write(dir, "userspace/min_freq", v) || devfreq_write(dir, "userspace/max_freq", v)) return -1;
+    } else if (strcmp(gov, "userspace")) return 0;   // (the governor it had, and the pin never took: nothing to give back)
+    else if (g_df_gov[0] && strcmp(g_df_gov, "userspace")) {   // (the node's own min / max back to its table's ends, then the governor it had)
+        char b[4096], v[32]; long low = 0, high = 0;
+        if (devfreq_read(dir, "available_frequencies", b, sizeof b) > 0)
+            for (char *t = strtok(b, " \n"); t; t = strtok(NULL, " \n")) { char *end; long f = strtol(t, &end, 10); if (end == t || f <= 0) continue; if (!low) low = f; high = f; }
+        if (low) { snprintf(v, sizeof v, "%ld", low); devfreq_write(dir, "userspace/min_freq", v); }
+        if (high) { snprintf(v, sizeof v, "%ld", high); devfreq_write(dir, "userspace/max_freq", v); }
+        if (devfreq_write(dir, "governor", g_df_gov)) return -1;
+    }
+    return 0;
+}
 static void gpu_turbo(void) {
     pthread_mutex_lock(&g_turbo_mu);
     if (g_turbo_dead) { pthread_mutex_unlock(&g_turbo_mu); return; }
     const char *e = getenv("DM_GPU_TURBO"); int tm = dm_pacing_turbo(), want = tm == 2 ? turbo_auto(g_turbo_on) : tm;   // dm_pacing.c; e names it in the log
     if (want != g_turbo_on) {
-        if (turbo_set(want)) {
+        int r = turbo_set(want), devfreq = 0;
+        if (r && access("/dev/kgsl-3d0", F_OK)) { r = turbo_set_devfreq(want); devfreq = 1; }   // (no KGSL: Arm's Mali through devfreq)
+        if (r) {
             g_turbo_dead = 1;
-            LOG("[RED] [perf] DM_GPU_TURBO=%s: the GPU's power control could not be set (%s); not tried again", e ? e : "0", strerror(errno));
+            LOG("[RED] [perf] DM_GPU_TURBO=%s: the GPU's clock could not be set (%s%s); not tried again. On Mali this needs the userspace devfreq governor and root",
+                e ? e : "0", devfreq && g_df_dir[0] ? g_df_dir : strerror(errno), devfreq && !g_df_dir[0] ? ": no GPU devfreq node" : "");
         } else {
-            g_turbo_on = want; LOG("[perf] DM_GPU_TURBO=%d: %s", want, want ? "the GPU at its highest clock (power control off)" : "the GPU's own clock control again");
+            g_turbo_on = want; LOG("[perf] DM_GPU_TURBO=%d: %s%s", want, want ? "the GPU at its highest clock" : "the GPU's own clock control again", devfreq ? " (devfreq)" : " (KGSL power control off)");
         }
     }
     pthread_mutex_unlock(&g_turbo_mu);
 }
 void dm_perf_gpu_release(void) {
     pthread_mutex_lock(&g_turbo_mu);
-    if (g_turbo_on && !turbo_set(0)) { g_turbo_on = 0; LOG("[perf] DM_GPU_TURBO: the GPU's own clock control again (the app paused or ended)"); }
+    if (g_turbo_on) {   // (whichever pin was taken: KGSL's property, or on a Mali device the devfreq node)
+        int ok = !turbo_set(0);
+        if (!ok && access("/dev/kgsl-3d0", F_OK)) ok = !turbo_set_devfreq(0);
+        if (ok) { g_turbo_on = 0; LOG("[perf] DM_GPU_TURBO: the GPU's own clock control again (the app paused or ended)"); }
+    }
     pthread_mutex_unlock(&g_turbo_mu);
 }
 

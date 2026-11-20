@@ -10,7 +10,7 @@ files in the repository, real-device evidence, English, Conventional Commits).
 
 | | |
 |---|---|
-| A phone | Android 8.0+ (API 26). The GPU must read BC-compressed textures: **Adreno** (Snapdragon) or **Xclipse** (Exynos 2200 and later). Mali and PowerVR do not. |
+| A phone | Android 8.0+ (API 26). **Adreno** (Snapdragon) and **Xclipse** (Exynos 2200 and later) read BC-compressed textures, the Switch's; **Mali** and **Immortalis** (Arm's driver: MediaTek, Exynos, Kirin) and **PowerVR** do not, and the host decodes them on the CPU instead (4 to 8 times the texture memory, slower the first time each texture is used). The installer says which case the device is and goes on either way. A Mali device needs the host's cache maintenance between the CPU and the GPU (`gfx_vk_poolsync.c`, `ahb_no_cache_sync`), which is part of the runtime. |
 | Space | About 1.5 GB for the app and its environment, plus your own game files and the packs they make. |
 | The game's own files | NSP, XCI, NSZ or XCZ, dumped from your own Switch. The tool never downloads them. |
 | Your own `prod.keys` | Dumped from your own Switch. The tool needs them to read the game files; they never leave your machine and never enter a pull request. |

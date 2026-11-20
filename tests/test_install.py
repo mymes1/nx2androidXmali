@@ -201,6 +201,21 @@ class RomfsAt(unittest.TestCase):
         dev = self.run_on(Device(rom, installed=True), romfs_at=DUMP)   # granted before the APK
         self.assertLess(dev.step('shell', 'appops set'), dev.step('install'))
 
+    def test_mali_decodes_bc_on_the_cpu(self):
+        """A device without BC textures (Mali, Immortalis, PowerVR: profile requires bcn) is installed, not refused: the host decodes the blocks as it uploads
+        them (gfx_vk_tex.c bc_decode), which is slower and larger. The run says so, and goes on to the APK."""
+        man = json.loads((self.data / datapack.MANIFEST).read_text()); man['requires'] = ['bcn']
+        (self.data / datapack.MANIFEST).write_text(json.dumps(man))   # the profile's requires: BC-compressed textures
+        dev = Device(installed=False)
+        dev.gpu = lambda: 'ARM, Mali-G57 MC2, OpenGL ES 3.2'   # (SurfaceFlinger's line for a Galaxy Tab A9)
+        self.assertFalse(dev.bc_textures())
+        said = []
+        real, install.say = install.say, lambda m: said.append(m)
+        try: self.run_on(dev)
+        finally: install.say = real
+        self.assertNotEqual(dev.step('install'), -1)
+        self.assertTrue(any('decodes them on the CPU' in m for m in said), said)
+
     def test_free_space(self):   # the RomFS in another folder needs no room in the files folder
         rom = sum(ROM.values())
         self.run_on(Device({f'{DUMP}/{r}': n for r, n in ROM.items()}, free=self.bytes - rom), romfs_at=DUMP)

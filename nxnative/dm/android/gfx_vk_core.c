@@ -16,6 +16,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <math.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -371,6 +372,11 @@ const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local) {
 // with "too many memory pools"; the index (g_pool_ord) is 16-bit, so up to 65,535
 #define MAXPOOL 32768
 static vkpool_t g_pool[MAXPOOL]; static int g_npool;
+// A zero-copy pool's pages against the CPU's cache: the pools a submission uses are cleaned before it is queued and invalidated once the GPU is past its fence
+// (gfx_vk_poolsync.c; Arm's Mali driver, VQ_AHB_NO_CACHE_SYNC). Nothing is done on a driver that does not need it.
+// g_ahb_mu is defined here for gfx_vk_poolsync.c, which brackets the submissions with it; the pool side below never takes it.
+static pthread_mutex_t g_ahb_mu = PTHREAD_MUTEX_INITIALIZER;
+void vk_ahb_note_use(vkpool_t *p); void vk_ahb_sync_start(uint64_t fence); void vk_ahb_sync_end(uint64_t fence);   // (its needs from here: vk_pool_sync, vk_pool_bump, vk_pool_stale, below)
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
 static uint32_t g_pool_gen;   // bumped under the write lock when a pool is added or removed: vk_pool_of's per-thread cache holds while it is unchanged
 // g_pool's indices by lo, remade under the write lock whenever a pool is added or removed: vk_pool_of searches it. A linear scan of g_pool behind the per-thread
@@ -688,6 +694,38 @@ static int pool_fd(const vkpool_t *p, int *own) {
     if (nfd < 1) return -1;
     *own = 1; return fds[0];
 }
+// gfx_vk_poolsync.c: the dma-buf of the pool a submission noted, found again under the pool lock by its serial and address (a pool freed since is skipped), synced. flags are
+// DMA_BUF_SYNC_START or _END with READ / WRITE / RW (<linux/dma-buf.h>): START cleans the CPU's caches over the mapping, END invalidates them. 0: done, else -1
+// gfx_vk_poolsync.c: the pool a version was noted for, whether it is gone, and the version moved past the one a submission noted
+static vkpool_t *pool_by(uint64_t serial, uint64_t lo) {   // (g_pool_mu held)
+    for (int k = 0; k < g_npool; k++) if (g_pool[k].serial == serial && g_pool[k].lo == lo) return &g_pool[k];
+    return NULL;
+}
+uint64_t vk_pool_bump(uint64_t serial, uint64_t lo) {   // the pool's version now: what its END is for (0: the pool is gone). g_ahb_mu held by the caller
+    uint64_t v = 0;
+    pthread_rwlock_rdlock(&g_pool_mu);
+    vkpool_t *p = pool_by(serial, lo); if (p) v = ++p->sync_ver;
+    pthread_rwlock_unlock(&g_pool_mu);
+    return v;
+}
+int vk_pool_stale(uint64_t serial, uint64_t lo, uint64_t ver) {   // (g_ahb_mu held by the caller: vk_ahb_sync_end)
+    pthread_rwlock_rdlock(&g_pool_mu);
+    vkpool_t *p = pool_by(serial, lo);
+    int stale = !p || p->sync_ver != ver;   // (a pool made again at the same address has another serial: never this one)
+    pthread_rwlock_unlock(&g_pool_mu);
+    return stale;
+}
+int vk_pool_sync(uint64_t serial, uint64_t lo, unsigned long long flags) {   // (g_pool_mu only: gfx_vk_poolsync.c holds g_ahb_mu over it)
+    typedef struct { unsigned long long flags, arg; } dma_buf_sync_t;
+    dma_buf_sync_t a; a.flags = flags; a.arg = 0;   // (arg 0: the whole buffer, not a length and an offset)
+    int own = 0, fd = -1;
+    pthread_rwlock_rdlock(&g_pool_mu);
+    vkpool_t *p = pool_by(serial, lo); if (p) fd = pool_fd(p, &own);
+    int r = -1;
+    if (fd >= 0) { do r = ioctl(fd, _IOW('b', 1, dma_buf_sync_t), &a); while (r < 0 && errno == EINTR); if (own) close(fd); }
+    pthread_rwlock_unlock(&g_pool_mu);
+    return r;
+}
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge), but for
 // the pools inside it, whose pages stay their own. 0 = done; 1 = nothing mapped (no pool is exactly [mem, mem+len): a pool not whole host pages, whose tracked range is
 // rounded up to them; or the first mmap failed); -1 = failed after mapping a part read-only (nvn_dirty_defrag makes the writable pages writable again)
@@ -742,6 +780,8 @@ static void pool_copy_back(vkpool_t *p) {
         a = e;
     }
 }
+// A zero-copy pool's pages against the CPU's cache (VQ_AHB_NO_CACHE_SYNC: Arm's Mali): the block is gfx_vk_poolsync.c, called from the submission functions
+// (vk_ahb_note_use from vk_pool_of, vk_ahb_sync_start before a queue submit, vk_ahb_sync_end once its fence passes); vk_pool_sync below is its one need from here.
 // Pools over ZC_CHUNK are made of chunks of at most that size, each a pool entry with an AHardwareBuffer of its own: the Adreno 830's gralloc allocator service
 // (vendor.qti.hardware.display.allocator-service, snapalloc) aborts on a BLOB of 812 MB ("ubsan: mul-overflow" in SnapConstraintManager::AlignmentToAlignedConstraints),
 // and the whole Android UI restarts with it; 400 MB ones work (13 Sentinels: Aegis Rim's 0x32c00000-byte pool). A range across two chunks has no buffer (vk_pool_of)
@@ -1005,7 +1045,7 @@ again:   // (pool_back found another pool in the entry: the one looked up was re
     if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
     return r;
 }
-vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) { return pool_find(addr, len, 1); }
+vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) { vkpool_t *p = pool_find(addr, len, 1); if (p) vk_ahb_note_use(p); return p; }   // (the note: a pool this submission uses, for the zero-copy cache sync)
 uint32_t vk_pool_gen(void) { return __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE); }   // pools added or removed (gfx_vk_exec.c's descriptor set memo: vk_pool_of's results hold while it is unchanged)
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
     vkpool_t *p = vk_pool_of(addr, len ? len : 1);
@@ -1709,6 +1749,7 @@ static void *completion_main(void *a) {
         while (!g_ch) pthread_cond_wait(&g_ccv, &g_cmu);
         cpend *c = g_ch; pthread_mutex_unlock(&g_cmu);
         if (V.has_timeline) wait_fence(c->fence); else { VkResult r = vkWaitForFences(V.dev, 1, &g_fring[c->fence % NFRING], VK_TRUE, UINT64_MAX); if (r != VK_SUCCESS) die("[vk] GPU fence wait did not complete: %d", r); }
+        vk_ahb_sync_end(c->fence);   // the GPU's writes into that submission's pools replace the CPU's cache lines (VQ_AHB_NO_CACHE_SYNC)
         if (g_shadow_pools && c->rslot >= 0) pools_copy_back(&g_slot[c->rslot]);
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
             { uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * V.props.limits.timestampPeriod); g_gpu_ns += ns; int k = (int)(c->frame % 64);
@@ -1793,12 +1834,14 @@ uint64_t mtl_sub_commit(void) {
     uint64_t f = ++g_fence;
     VkCommandBuffer cbs[1 + MAIN_CBS]; uint32_t ncb = 0; if (s->up_used) cbs[ncb++] = s->up; for (int i = s->nmain_sent; i < s->nmain_used; i++) cbs[ncb++] = s->mains[i];
     VkTimelineSemaphoreSubmitInfo ts = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, NULL, 0, NULL, 1, &f};
+    vk_ahb_sync_start(f);   // the CPU's writes into the pools this submission uses reach memory before the GPU reads them (VQ_AHB_NO_CACHE_SYNC)
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, &ts, 0, NULL, NULL, ncb, cbs, 1, &g_timeline};
     VkFence fe = VK_NULL_HANDLE;
     if (!V.has_timeline) {   // the ring's fence for f: free once the completion thread has passed f - NFRING (already so: slot_recycle waited for f - NSLOT)
         if (f > NFRING) mtl_wait(f - NFRING, ~0ull);
         fe = g_fring[f % NFRING]; VKCHK(vkResetFences(V.dev, 1, &fe)); si.pNext = NULL; si.signalSemaphoreCount = 0;
     }
+    vk_ahb_sync_start(f);   // (again, just before the queue: the pools noted during this submission's replay are cleaned now, so nothing the game wrote in that time is behind)
     struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); VkResult r = vkQueueSubmit(V.q, 1, &si, fe); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
     if (r) { void vk_crumbs_report(void); vk_crumbs_report(); die("[vk] vkQueueSubmit: %d (device lost?)", r); }
     s->fence = f;

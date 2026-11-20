@@ -11,6 +11,7 @@ unsigned char g_vk_quirks[VQ_COUNT];
 vk_gpu g_vk_gpu;
 
 static int adreno(const vk_gpu *g) { return g->vendor == VENDOR_QUALCOMM; }   // both drivers: Qualcomm's own and Mesa's Turnip
+static int mali(const vk_gpu *g) { return g->vendor == VENDOR_ARM || g->driver == VK_DRIVER_ID_ARM_PROPRIETARY; }   // Arm's own driver: Mali and Immortalis
 
 static const struct {
     enum vk_quirk q; const char *name, *setting; int (*match)(const vk_gpu *); const char *why;
@@ -21,6 +22,15 @@ static const struct {
     // written for NieR:Automata
     {VQ_GS_SPLIT, "gs_split", "DM_VK_QUIRK_GS_SPLIT", adreno,
      "geometry-shader draws split into vertex and fragment passes: written and checked on Adreno only"},
+    // the ghosting, smearing and stale vertices of Picross S+ on a Pixel 9 Pro's Mali-G715 (PICROSS_S_PLUS.md): a pool's pages are the game's own writes until the GPU reads
+    // them, and what the GPU wrote until the CPU reads it back, and on Adreno the hardware buffer's mappings are cache-coherent, so nothing had to be done. Mali's are not:
+    // the CPU's caches hold the pool's lines across a submission, and a game that writes guest memory and draws from it, or reads back what the GPU wrote, sees the
+    // other side's old bytes. With this on, DMA_BUF_IOCTL_SYNC (start, then the cache's clean; end, then its invalidate) brackets every submission that uses a zero-copy pool
+    // (gfx_vk_poolsync.c vk_ahb_sync_start / _end), which is the contract the AHardwareBuffer's dma-buf mapping asks for. Untested on a Mali device here (no Mali in reach): it is the fix for what that
+    // report describes, and DM_VK_QUIRK_AHB_NO_CACHE_SYNC=0 turns it off to compare on one. It is off on every other driver: an Adreno mapping
+    // was measured coherent, and an extra clean plus invalidate there costs an ioctl on every pool of every submission.
+    {VQ_AHB_NO_CACHE_SYNC, "ahb_no_cache_sync", "DM_VK_QUIRK_AHB_NO_CACHE_SYNC", mali,
+     "Mali keeps the CPU's cache over a hardware buffer's pages: the pool's pages are cleaned before and invalidated after each submission"},
 };
 _Static_assert(sizeof ROWS / sizeof *ROWS == VQ_COUNT, "one row a quirk");
 

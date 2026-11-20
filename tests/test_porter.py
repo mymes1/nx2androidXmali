@@ -1,5 +1,5 @@
 # Unit tests of the port pipeline's own parts (python -m unittest discover tests). They need no game files, toolchains or device.
-import contextlib, hashlib, importlib.util, io, json, os, random, re, shutil, struct, sys, tempfile, unittest
+import contextlib, hashlib, importlib.util, io, json, os, random, re, shutil, struct, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -454,6 +454,29 @@ class Experimental(unittest.TestCase):
         img = bytearray(0x400); struct.pack_into('<I', img, 4, 0x100); img[0x100:0x104] = b'MOD0'; struct.pack_into('<i', img, 0x104, 0x100)
         for i, (tag, v) in enumerate([(1, 1), (1, 0x4b), (0x15, 0), (6, 0x300), (5, 0x340), (0, 0)]): struct.pack_into('<II', img, 0x200 + i * 8, tag, v)   # Elf32_Dyn
         with self.assertRaisesRegex(ValueError, 'not a 64-bit NSO'): nso_syms.dynsyms(bytes(img))
+
+    def test_survey_without_an_sdk_module(self):
+        """An ExeFS with no sdk (Sonic Colors: Ultimate ships main and subsdk0..3 only): the survey's import table says so
+        instead of dying on the missing file, and the sdk surface is read from the module the ExeFS does have"""
+        sys.path.insert(0, str(REPO / 'nxnative/dm/tools')); import nso_syms
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_exefs_')); ex = t / 'ExeFS'; ex.mkdir()
+        try:
+            self.assertEqual(nso_syms.exefs_modules(ex), [])
+            self.assertEqual(nso_syms.exports_or_empty(ex), (set(), None, 'no sdk module in the ExeFS (no modules): no exports to compare'))
+            for m in ('main', 'subsdk0', 'subsdk1'): (ex / m).write_bytes(b'NSO0' + bytes(0x50))   # a header only: dynsyms raises, which is reported too
+            self.assertEqual(nso_syms.exefs_modules(ex), ['main', 'subsdk0', 'subsdk1'])
+            exports, mod, why = nso_syms.exports_or_empty(ex)   # no sdk, and two modules or more: no substitute is named
+            self.assertEqual((exports, mod), (set(), None)); self.assertIn('no sdk module', why)
+            self.assertEqual(nso_syms.imports_or_empty(ex)[0], set()); self.assertTrue(nso_syms.imports_or_empty(t / 'nowhere')[1])
+            os.mkdir(t / 'two'); (t / 'two/main').write_bytes(b'x'); (t / 'two/subsdk0').write_bytes(b'x')
+            self.assertEqual(nso_syms.sdk_module(t / 'two'), 'subsdk0')   # main and one subsdk: the SDK surface is that module's
+            (t / 'two/sdk.nro').write_bytes(b'x'); self.assertEqual(nso_syms.sdk_module(t / 'two'), 'sdk.nro')   # an older SDK's name for it
+            # the script itself runs on such an ExeFS and prints what it found, rather than a traceback
+            r = subprocess.run([sys.executable, str(REPO / 'nxnative/dm/tools/nso_syms.py'), str(REPO / 'nxnative/dm/host'), '-', str(ex)],
+                               capture_output=True, text=True, encoding='utf-8', errors='replace')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('ExeFS modules: main, subsdk0, subsdk1', r.stdout); self.assertIn('(no sdk module to compare with)', r.stdout)
+        finally: shutil.rmtree(t, ignore_errors=True)
 
     def test_crash_log(self):   # an error porter does not expect: the traceback goes to <build folder>/logs/crash.log, and the error is raised again
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_crash_'))

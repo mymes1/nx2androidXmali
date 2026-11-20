@@ -129,6 +129,7 @@ static void indirect_dispatch(VkCommandBuffer cb, VkBuffer b, VkDeviceSize off) 
 static uint64_t g_used_bytes;
 static uint64_t pool_ns(void) { return 0; }
 static int pool_back(vkpool_t *p, uint64_t serial) { (void)p; (void)serial; abort(); }
+static void vk_ahb_note_use(vkpool_t *p) { (void)p; }   /* gfx_vk_poolsync.c's: the zero-copy cache sync, which has no device here */
 /* CORE */
 /* REPLAY */
 /* LIFECYCLE */

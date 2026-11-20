@@ -22,10 +22,22 @@ No NVN implementation or game binary patch is included.
 Pixel 9 Pro with system Mali-G715 also boots with the expanded profile, but has
 persistent washed-out rendering and lines/triangles on updates. A separate
 `DM_VK_NO_ZEROCOPY=1` diagnostic test removed the visible glitches according to
-the tester, but was far too slow. This does not establish a precise root cause;
-that option is excluded from the profile. Pixel 9a has not been tested.
+the tester, but was far too slow. That is the clue the runtime now follows: with
+every pool *copied* instead of zero-copy, the game's data reaches the GPU through
+the copy the host itself makes, so whatever the game writes before a submission is
+there; with zero-copy pools the pages are the game's own, and Mali's mapping of a
+hardware buffer is not cache-coherent with the CPU. The runtime now brackets each
+submission's zero-copy pools with `DMA_BUF_IOCTL_SYNC` (`nxnative/dm/android/gfx_vk_poolsync.c`,
+the `ahb_no_cache_sync` quirk, on for Arm's driver): the CPU's cache is cleaned
+before the GPU reads those pages and invalidated once it has written them, which is
+the same data the copy path delivered, without the copy. That is the fix this
+document points at, not a measured result: it has not been run on a Mali device
+here. On a Pixel 9 Pro the comparison is
+`DM_VK_QUIRK_AHB_NO_CACHE_SYNC=1` (the new default of the row there) against
+`DM_VK_QUIRK_AHB_NO_CACHE_SYNC=0`, with `DM_VK_NO_ZEROCOPY=1` as the slow reference.
+The profile still sets neither option. Pixel 9a has not been tested.
 Stock-driver RP6 behavior is not established. This contribution claims RP6 /
-PurpleVK support only, not general Mali support.
+PurpleVK support only.
 
 ## Review checklist
 

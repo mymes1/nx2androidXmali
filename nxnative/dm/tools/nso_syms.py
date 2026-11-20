@@ -40,6 +40,34 @@ def dynsyms(img):
 def imports(exefs, mod='main'): return {s for s, defined, _ in dynsyms(load(os.path.join(exefs, mod))) if not defined}
 def exports(exefs, mod='sdk'): return {s for s, defined, bind in dynsyms(load(os.path.join(exefs, mod))) if defined and bind in (1, 2)}
 
+# A game's ExeFS need not hold sdk: a build with NintendoSDK modules of its own (Sonic Colors: Ultimate: main,
+# subsdk0..subsdk3, with its own headers) has no sdk module at all, and older SDKs ship it as sdk.nro. The
+# survey runs this script for every new game, so a missing module is described in the report, never a traceback.
+def exefs_modules(exefs):
+    """The NSO modules an ExeFS holds, in load order (main, subsdk*, sdk*), rtld (the host replaces it) left out"""
+    try: names = [n for n in os.listdir(exefs) if os.path.isfile(os.path.join(exefs, n))]
+    except OSError: return []
+    return sorted((n for n in names if n == 'main' or n.startswith(('subsdk', 'sdk'))), key=lambda n: (n != 'main', n))
+
+
+def sdk_module(exefs):
+    """The module's name that holds the SDK surface ('sdk', 'sdk.nro', else the last subsdk*), None when the ExeFS has none"""
+    mods = exefs_modules(exefs)
+    for want in ('sdk', 'sdk.nro'):
+        if want in mods: return want
+    subs = [n for n in mods if n.startswith('subsdk')]
+    return subs[-1] if subs and len(mods) <= 2 else None
+
+
+def exports_or_empty(exefs, mod=None):
+    """(the set, the module it was read from, None) — or (set(), None, why) when the ExeFS has no module to read"""
+    if mod is None: mod = sdk_module(exefs)
+    if not mod: return set(), None, f'no sdk module in the ExeFS ({", ".join(exefs_modules(exefs)) or "no modules"}): no exports to compare'
+    path = os.path.join(exefs, mod)
+    if not os.path.isfile(path): return set(), mod, f'{mod} is not in the ExeFS'
+    try: return exports(exefs, mod), mod, None
+    except (ValueError, OSError, struct.error, lz4.block.LZ4BlockError) as e: return set(), mod, f'{mod}: {e}'
+
 def area(s):
     m = re.match(r'_ZN(?:K)?2nn(\d+)(\w+)', s)
     if m: n = int(m.group(1)); return 'nn::' + m.group(2)[:n]
@@ -60,11 +88,24 @@ def host_hooks(host, forced=True):
         hooks |= set(re.findall(r'^VKB?\((vk\w+),', open(f, encoding='utf-8', errors='replace').read(), re.M))
     return hooks
 
+def imports_or_empty(exefs, mod='main'):
+    """(the set, why) — why is None when the module was read, else a line for the report"""
+    path = os.path.join(exefs, mod)
+    if not os.path.isfile(path): return set(), f'no {mod} in the ExeFS ({", ".join(exefs_modules(exefs)) or "no modules"}): nothing to compare'
+    try: return imports(exefs, mod), None
+    except (ValueError, OSError, struct.error, lz4.block.LZ4BlockError) as e: return set(), f'{mod}: {e}'
+
+
 if __name__ == '__main__':
     host, A, B = sys.argv[1:4]
     hooks = host_hooks(host)
-    ia, ib, eb = (set() if A == '-' else imports(A)), imports(B), exports(B)   # A = -: no reference game, compare with the host hooks only
-    print('HLE hooks in host:', len(hooks), '| present in new game sdk exports:', len(hooks & eb))
+    eb, ebsrc, ebwhy = exports_or_empty(B)   # A = -: no reference game, compare with the host hooks only
+    ia, iawhy = (set(), None) if A == '-' else imports_or_empty(A)
+    ib, ibwhy = imports_or_empty(B)
+    for why in (iawhy, ibwhy, ebwhy):
+        if why: print(f'modules: {why}')
+    print(f'ExeFS modules: {", ".join(exefs_modules(B)) or "none"}')
+    print('HLE hooks in host:', len(hooks), '| present in new game sdk exports:', len(hooks & eb), f'({ebsrc} exports {len(eb)})' if ebsrc else '(no sdk module to compare with)')
     print('main imports: old game %d, new game %d, shared %d, new-only %d' % (len(ia), len(ib), len(ia & ib), len(ib - ia)))
     new = ib - ia
     by = collections.Counter(area(s) for s in new); allb = collections.Counter(area(s) for s in ib)

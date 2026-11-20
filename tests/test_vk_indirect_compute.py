@@ -47,7 +47,7 @@ def production():
     functions = ''.join(function(core, sig) for sig in [
         'static vkpool_t *pool_find(', 'vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'int vk_buf_at(',
         'static vksub_t *cur(', 'void *vk_scratch(', 'void vk_img_barrier_all('])
-    # Single-line production functions need their line, not the next function.
+    # Single-line production functions need their line, not the next function (vk_pool_of stays one line: see gfx_vk_core.c).
     for sig in ['vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'static vksub_t *cur(']:
         functions = functions.replace(function(core, sig), next(x for x in core.splitlines() if x.startswith(sig)) + '\n')
     driver = function(replay, 'static uint64_t c2_handle(') + drvs + cache + memo + indirect

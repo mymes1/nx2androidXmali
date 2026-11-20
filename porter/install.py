@@ -160,7 +160,10 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         say(f'device: {model or dev} ({dev}), GPU {adb.gpu() or "unknown"}')
         if 'bcn' in man.get('requires', []):   # the profile's requires: BC-compressed textures
             bc = adb.bc_textures()
-            if bc is False: raise BuildError(f'{man["name"]} needs BC-compressed textures, which this device\'s GPU ({adb.gpu()}) cannot read')
+            # A GPU without BC (Mali, Immortalis, PowerVR) is no longer a refusal: the host decodes a BC texture on the CPU as it uploads it (gfx_vk_core.c has_bc,
+            # gfx_vk_tex.c bc_decode), which costs memory and time but draws the game. A first Mali run is slower and larger than an Adreno one.
+            if bc is False: say(f'{man["name"]} uses BC-compressed textures, which this GPU ({adb.gpu()}) has none of: the host decodes them on the CPU (more memory, '
+                                'and a slower first use of each texture)')
             if bc is None: say(f'[RED] {man["name"]} needs BC-compressed textures; whether this GPU ({adb.gpu() or "unknown"}) reads them is not known')
         was = device_romfs(adb.read_text(f'{files}/env.txt'))   # an earlier --romfs-at install's folder
         if romfs_at is None and was:

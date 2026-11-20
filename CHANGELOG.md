@@ -8,6 +8,34 @@ players on the released version are not pushed onto an alpha.
 
 The release page has the APK and the full notes: <https://github.com/zFitness/nx2androidX/releases>.
 
+## Unreleased
+
+### The app (the APK)
+
+#### Added
+
+- **Mali and Immortalis GPUs** (Arm's own driver: MediaTek's Dimensity and Helio,
+  Exynos, Kirin) run games now, on the same runtime as Adreno and Xclipse.
+  Two things were missing. BC-compressed textures, the Switch's format, are
+  decoded on the CPU as they are uploaded, so a game that asks for them is
+  installed instead of refused (its textures take 4 to 8 times the memory, and
+  the first use of each is slower). And a zero-copy pool's pages are cleaned
+  before each submission and invalidated after it (`DMA_BUF_IOCTL_SYNC`): Arm's
+  mapping is not coherent with the CPU's cache the way Adreno's is, which was
+  the washed-out picture and stray lines of Picross S+ on a Pixel 9 Pro's
+  Mali-G715. The fix is keyed on the driver, not on a device or a game.
+- `DM_GPU_TURBO` pins a Mali GPU's clock through devfreq where there is no KGSL:
+  it puts the node on the userspace governor and takes its min and max to the top
+  clock, and gives the governor back when the app pauses or ends (it needs root;
+  without it the log says so once and leaves the governor alone).
+
+#### Fixed
+
+- A game whose ExeFS has no module named `sdk` (Sonic Colors: Ultimate, whose
+  NintendoSDK code is in its `subsdk` modules) no longer stops the port at the
+  survey with `FileNotFoundError`: the survey lists the modules it found and
+  goes on. This was the "port ended without an artifact" failure.
+
 ## v0.4.0-alpha02 - 2026-11-20
 
 ### The app (the APK)
