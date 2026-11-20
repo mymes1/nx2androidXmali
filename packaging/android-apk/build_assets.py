@@ -15,7 +15,7 @@ The result is what the Gradle build takes as the app's assets:
     <out>/drivers/         the Vulkan driver the app ships (Mesa's Turnip), unpacked by the app itself
     <out>/manifest.json    what is in there and what it is for
 """
-import argparse, hashlib, importlib.util, json, os, re, shutil, subprocess, sys, tarfile, urllib.request
+import argparse, hashlib, importlib.util, json, os, re, shutil, subprocess, sys, tarfile, time, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -281,6 +281,7 @@ def main():
     ap.add_argument('--cache', default='')
     ap.add_argument('--no-wheels', action='store_true')
     ap.add_argument('--no-dotnet', action='store_true', help='do not ship the .NET SDK: the app downloads it on the first run')
+    ap.add_argument('--no-profiles', action='store_true', help='do not cut the game profiles package (a build without the payload: the profiles are cut from the same tree, but a build that has no payload has no profiles package to attach either)')
     a = ap.parse_args()
     out = Path(a.out); cache = Path(a.cache or (Path(__file__).resolve().parent / '.cache'))
     if a.finalize:
@@ -346,8 +347,19 @@ def main():
     # with the receipt of what they imported, so the app can say whether there is a newer package - no version
     # rule, no nagging.
     print('>> the game profiles package')
-    profiles_manifest, profiles_zip = cut_profiles(REPO / 'nxnative/dm/games', profiles_out(cache))
-    (out / 'profiles.json').write_text(json.dumps(profiles_manifest, indent=2) + '\n')
+    if a.no_profiles:
+        # No package, but the manifest still: the app reads it (the environment check, the profiles pack) and a missing
+        # file is only an empty one there, so the app would not know whether a package it imports is this build's. The
+        # manifest of an empty package is the honest one: nothing in it, and the app says so.
+        print('   skipped (--no-profiles): no profiles package, and an empty manifest for the app to compare against')
+        spec = importlib.util.spec_from_file_location('profiles_zip', REPO / 'devtools/profiles_zip.py')
+        mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        empty = {'revision': mod.PROFILES_REVISION, 'commit': mod.PROFILES_COMMIT, 'count': 0, 'ids': [],
+                 'date': time.strftime('%Y-%m-%d'), 'name': '', 'sha256': '', 'size': 0}   # the keys cut() returns
+        (out / 'profiles.json').write_text(json.dumps(empty, indent=2) + '\n')
+    else:
+        profiles_manifest, profiles_zip = cut_profiles(REPO / 'nxnative/dm/games', profiles_out(cache))
+        (out / 'profiles.json').write_text(json.dumps(profiles_manifest, indent=2) + '\n')
 
     finalize_metadata(out)
 

@@ -22,6 +22,11 @@ payload_flag=""
 for a in "$@"; do
     [[ $a == --no-payload ]] && payload_flag="-PnoPayload"
 done
+# --no-profiles: do not cut the game profiles package either (a build with no payload has no profiles package to attach)
+profiles_flag=""
+for a in "$@"; do
+    [[ $a == --no-profiles ]] && profiles_flag="--no-profiles"
+done
 
 die() { echo "android-apk: $*" >&2; exit 1; }
 
@@ -60,7 +65,7 @@ echo ">> the app's assets"
 if [[ -n $payload_flag ]]; then
     echo "   skipped (--no-payload): the phone must already have the environment"
 else
-    python3 "$here/build_assets.py" --out "$cache/assets" --payload "$cache/payload-arm64.tar.gz" --toolchain "$cache/toolchain"
+    python3 "$here/build_assets.py" --out "$cache/assets" --payload "$cache/payload-arm64.tar.gz" --toolchain "$cache/toolchain" $profiles_flag
     # nx_extract for the phone, built here (the phone's .NET SDK cannot): after the assets, which it joins
     python3 "$here/build_nx_extract.py" || echo "   (no nx_extract for the phone: the .NET SDK is missing)"
     # The phone runs the C# tools but cannot build them: without them it would try to build the shader

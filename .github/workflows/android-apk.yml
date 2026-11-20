@@ -4,6 +4,8 @@
 #
 # The payload is a private release (NixPort/nixport-rootfs): the build needs a token with read access to it in the
 # repository's secret NIXPORT_TOKEN (a fine-grained token with that one repository). Everything else is public.
+# Without that secret - a fork, which does not inherit the upstream repository's secrets - the build degrades to the
+# app alone (--no-payload): the APK builds, without the rootfs and the game profiles package, and the run says so.
 #
 # The build is the release variant: the APK a player installs, signed with the project's own key (the secret
 # NX2A_KEYSTORE_B64), so it installs over an earlier one instead of beside it.
@@ -60,10 +62,13 @@ jobs:
             packaging/android-apk/.cache/nuget
           key: nx2a-android-payload-v1
       - name: the token for the private payload release
+        id: payload
         run: |
           if [ -z "$NIXPORT_TOKEN" ]; then
-            echo "::error::the secret NIXPORT_TOKEN is missing (a token with read access to NixPort/nixport-rootfs)"
-            exit 1
+            echo "::warning::the secret NIXPORT_TOKEN is missing (a token with read access to NixPort/nixport-rootfs): the app builds without the payload (build_apk.sh --no-payload)"
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=true" >> "$GITHUB_OUTPUT"
           fi
         env:
           NIXPORT_TOKEN: ${{ secrets.NIXPORT_TOKEN }}
@@ -87,15 +92,21 @@ jobs:
       - name: the app
         run: |
           export DOTNET="$(which dotnet)"
-          bash packaging/android-apk/build_apk.sh release
+          if [ "${{ steps.payload.outputs.have }}" = "true" ]; then
+            bash packaging/android-apk/build_apk.sh release
+          else
+            bash packaging/android-apk/build_apk.sh release --no-payload --no-profiles
+          fi
         env:
           GH_TOKEN: ${{ secrets.NIXPORT_TOKEN }}   # the private payload release
       - name: the game profiles package
+        if: steps.payload.outputs.have == 'true'
         # The app does not carry the game profiles (half a gigabyte of shader tables): the player imports a package into
         # their own folder (the environment check has the button). The APK build cuts it beside the assets (the cache) and
         # the app carries only its manifest; this step puts the package in the run's artifact.
         run: ls -la packaging/android-apk/.cache/profiles/
-      - uses: actions/upload-artifact@v7
+      - if: steps.payload.outputs.have == 'true'
+        uses: actions/upload-artifact@v7
         with:
           name: nx2a-game-profiles
           path: packaging/android-apk/.cache/profiles/*.zip
