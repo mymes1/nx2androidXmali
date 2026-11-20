@@ -162,7 +162,8 @@ def link(args, name):
     return subprocess.run([CC] + CC_EXTRA + args, capture_output=True, text=True, errors='replace')   # CC_EXTRA: the on-device toolchain's sysroot and runtime
 
 if a.play:   # libdmplay.so: the whole host + the JNI entry, statically linked (jni_android.c's header comment)
-    r = link(LDFLAGS + ['-shared', '-Wl,-soname,libdmplay.so', '-o', str(out / 'libdmplay.so')] + [str(o) for o in objs + pobjs + vobjs] + LIBS, 'libdmplay')
+    # A shared library normally permits unresolved symbols, which then fail only at dlopen on the phone.
+    r = link(LDFLAGS + ['-shared', '-Wl,--no-undefined', '-Wl,-soname,libdmplay.so', '-o', str(out / 'libdmplay.so')] + [str(o) for o in objs + pobjs + vobjs] + LIBS, 'libdmplay')
     print(r.stderr.strip() if r.returncode else f'linked {out / "libdmplay.so"}', file=sys.stderr if r.returncode else sys.stdout)
     if r.returncode: sys.exit(1)
     if a.release:   # the static symbol table goes too (the dynamic one stays: the JNI surface)

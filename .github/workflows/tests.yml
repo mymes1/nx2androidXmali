@@ -53,5 +53,6 @@ jobs:
           python-version: '3.14'
       - run: python -m pip install -r requirements.txt
       # one profile is enough: the core is the same for every game, the profile adds only its generated headers
-      - run: python nxnative/dm/android/build.py --game 0100F43008C44000 --ndk "$ANDROID_NDK_LATEST_HOME" --out "$RUNNER_TEMP/host-debug" --lib --jobs 4
+      # Exercise the actual on-device JNI library link, including its no-undefined check.
+      - run: python nxnative/dm/android/build.py --game 0100F43008C44000 --ndk "$ANDROID_NDK_LATEST_HOME" --out "$RUNNER_TEMP/host-debug" --lib --play --jobs 4
       - run: python nxnative/dm/android/build.py --game 0100F43008C44000 --ndk "$ANDROID_NDK_LATEST_HOME" --out "$RUNNER_TEMP/host-release" --lib --release --jobs 4

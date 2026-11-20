@@ -26,7 +26,6 @@ enum { VQ_AHB_NO_CACHE_SYNC = 1 };
 static int vk_quirk(int q) { (void)g_vk_quirks; (void)q; return 1; }
 #define VKLOG(...) do { fprintf(stderr, "log: " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define VKRED_ONCE(tag, ...) do { static int shown; if (!shown++) { fprintf(stderr, "red: " __VA_ARGS__); fputc('\n', stderr); } } while (0)
-pthread_mutex_t g_ahb_mu = PTHREAD_MUTEX_INITIALIZER;
 
 /* gfx_vk_core.c's side, as the harness: the pool table, its versions, and the syncs each pool got */
 struct st { vkpool_t p; int start, end, start_at_submit; };
@@ -34,8 +33,9 @@ static struct st P[4];
 static int nsub, synced_after_submit;
 int vk_pool_sync(uint64_t serial, uint64_t lo, unsigned long long flags) {
     for (int i = 0; i < 4; i++) if (P[i].p.serial == serial && P[i].p.lo == lo) {
-        if (flags & 4) { P[i].start++; P[i].start_at_submit = nsub; if (nsub != 0 && synced_after_submit) return -1; }
-        else if (flags & 8) P[i].end++;
+        if (flags == 7) { P[i].start++; P[i].start_at_submit = nsub; if (nsub != 0 && synced_after_submit) return -1; }
+        else if (flags == 3) P[i].end++;
+        else abort();
         return 0;
     }
     return -1;   /* a pool that is gone */
@@ -98,6 +98,32 @@ int main(void) {
 
 
 class PoolSync(unittest.TestCase):
+    def test_separate_translation_unit_links_without_external_mutex(self):
+        cc = shutil.which('cc') or shutil.which('clang')
+        if not cc: self.skipTest('a C compiler is required')
+        with tempfile.TemporaryDirectory(prefix='nx2a_poolsync_link_') as tmp:
+            tmp = Path(tmp)
+            src = SRC.read_text(encoding='utf-8').replace('#include "gfx_vk.h"', '#include "stand_in_gfx_vk.h"', 1)
+            (tmp / 'gfx_vk_poolsync.c').write_text(src, encoding='utf-8')
+            (tmp / 'stand_in_gfx_vk.h').write_text(r'''
+#include <pthread.h>
+#include <stdint.h>
+typedef struct { uint64_t lo, hi, serial, use_gen, sync_ver; int zero_copy; } vkpool_t;
+enum { VQ_AHB_NO_CACHE_SYNC = 1 };
+static inline int vk_quirk(int q) { (void)q; return 1; }
+#define VKLOG(...) ((void)0)
+#define VKRED_ONCE(...) ((void)0)
+''', encoding='utf-8')
+            (tmp / 'mock.c').write_text(r'''
+#include <stdint.h>
+int vk_pool_sync(uint64_t s, uint64_t l, unsigned long long f) { (void)s; (void)l; (void)f; return 0; }
+uint64_t vk_pool_bump(uint64_t s, uint64_t l) { (void)s; (void)l; return 1; }
+int vk_pool_stale(uint64_t s, uint64_t l, uint64_t v) { (void)s; (void)l; (void)v; return 0; }
+int main(void) { return 0; }
+''', encoding='utf-8')
+            r = subprocess.run([cc, '-std=gnu11', str(tmp / 'gfx_vk_poolsync.c'), str(tmp / 'mock.c'), '-pthread', '-o', str(tmp / 'check')], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_the_bookkeeping_from_the_real_source(self):
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc: self.skipTest('a C compiler is required')

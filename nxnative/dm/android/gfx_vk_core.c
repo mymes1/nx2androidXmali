@@ -374,8 +374,6 @@ const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local) {
 static vkpool_t g_pool[MAXPOOL]; static int g_npool;
 // A zero-copy pool's pages against the CPU's cache: the pools a submission uses are cleaned before it is queued and invalidated once the GPU is past its fence
 // (gfx_vk_poolsync.c; Arm's Mali driver, VQ_AHB_NO_CACHE_SYNC). Nothing is done on a driver that does not need it.
-// g_ahb_mu is defined here for gfx_vk_poolsync.c, which brackets the submissions with it; the pool side below never takes it.
-static pthread_mutex_t g_ahb_mu = PTHREAD_MUTEX_INITIALIZER;
 void vk_ahb_note_use(vkpool_t *p); void vk_ahb_sync_start(uint64_t fence); void vk_ahb_sync_end(uint64_t fence);   // (its needs from here: vk_pool_sync, vk_pool_bump, vk_pool_stale, below)
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
 static uint32_t g_pool_gen;   // bumped under the write lock when a pool is added or removed: vk_pool_of's per-thread cache holds while it is unchanged
@@ -695,7 +693,7 @@ static int pool_fd(const vkpool_t *p, int *own) {
     *own = 1; return fds[0];
 }
 // gfx_vk_poolsync.c: the dma-buf of the pool a submission noted, found again under the pool lock by its serial and address (a pool freed since is skipped), synced. flags are
-// DMA_BUF_SYNC_START or _END with READ / WRITE / RW (<linux/dma-buf.h>): START cleans the CPU's caches over the mapping, END invalidates them. 0: done, else -1
+// DMA_BUF_SYNC_START or _END with READ / WRITE / RW (<linux/dma-buf.h>): END finishes CPU access before GPU use; START begins CPU access after GPU use. 0: done, else -1
 // gfx_vk_poolsync.c: the pool a version was noted for, whether it is gone, and the version moved past the one a submission noted
 static vkpool_t *pool_by(uint64_t serial, uint64_t lo) {   // (g_pool_mu held)
     for (int k = 0; k < g_npool; k++) if (g_pool[k].serial == serial && g_pool[k].lo == lo) return &g_pool[k];
@@ -716,8 +714,8 @@ int vk_pool_stale(uint64_t serial, uint64_t lo, uint64_t ver) {   // (g_ahb_mu h
     return stale;
 }
 int vk_pool_sync(uint64_t serial, uint64_t lo, unsigned long long flags) {   // (g_pool_mu only: gfx_vk_poolsync.c holds g_ahb_mu over it)
-    typedef struct { unsigned long long flags, arg; } dma_buf_sync_t;
-    dma_buf_sync_t a; a.flags = flags; a.arg = 0;   // (arg 0: the whole buffer, not a length and an offset)
+    typedef struct { uint64_t flags; } dma_buf_sync_t;
+    dma_buf_sync_t a = { .flags = flags };   // DMA_BUF_IOCTL_SYNC applies to the whole buffer
     int own = 0, fd = -1;
     pthread_rwlock_rdlock(&g_pool_mu);
     vkpool_t *p = pool_by(serial, lo); if (p) fd = pool_fd(p, &own);

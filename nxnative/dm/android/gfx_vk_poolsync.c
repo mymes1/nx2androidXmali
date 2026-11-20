@@ -5,9 +5,9 @@
 // the GPU's writes are not what the CPU reads back out of it. A game whose textures the CPU makes and the GPU draws (glyphs, UI, video frames), or that reads back what
 // the GPU wrote, then sees the other side's old bytes: the washed-out picture and the lines and triangles of Picross S+ on a Pixel 9 Pro's Mali-G715 (PICROSS_S_PLUS.md),
 // and the corruption a game shows only where its CPU touched a pool last.
-// The dma-buf behind the buffer has an ioctl for exactly this: DMA_BUF_IOCTL_SYNC with DMA_BUF_SYNC_START ends the CPU's access (the kernel cleans the caches over the
-// mapping) and DMA_BUF_SYNC_END gives it back (it invalidates them). So each submission brackets the pools it uses: START before it is queued, so the CPU's bytes reach
-// memory before the GPU reads them; END once the GPU is past its fence, so its bytes reach the CPU. Only the pools the submission's command stream touched are bracketed
+// The dma-buf behind the buffer has an ioctl for exactly this: DMA_BUF_IOCTL_SYNC with DMA_BUF_SYNC_END ends the CPU's access (the kernel cleans the caches over the
+// mapping) and DMA_BUF_SYNC_START begins CPU access again. So each submission sends END before it is queued, then START after its fence passes.
+// These ioctls request cache synchronization; the actual behavior depends on the dma-buf exporter. Only the pools the submission's command stream touched are bracketed
 // (vk_pool_of notes the first use), not every pool alive.
 //
 // Two things keep an END from throwing away writes the GPU has not seen yet. Each entry is ENDed only once the fence of its own submission has passed (the completion thread
@@ -22,17 +22,17 @@
 #include <string.h>
 #include <unistd.h>
 
-extern pthread_mutex_t g_ahb_mu;   // gfx_vk_core.c
+static pthread_mutex_t g_ahb_mu = PTHREAD_MUTEX_INITIALIZER;   // private to the sync bookkeeping
 
-// gfx_vk_core.c (the pool table is its own): the dma-buf of the pool noted, synced with the flags (START cleans the CPU's caches over it, END invalidates them); the pool's
+// gfx_vk_core.c (the pool table is its own): the dma-buf of the pool noted, synced with the flags (END finishes CPU access, START begins CPU access); the pool's
 // version past the one noted; 1 when that version is past, or the pool is gone
 int vk_pool_sync(uint64_t serial, uint64_t lo, unsigned long long flags);
 uint64_t vk_pool_bump(uint64_t serial, uint64_t lo);                        // (g_ahb_mu held: called with it)
 int vk_pool_stale(uint64_t serial, uint64_t lo, uint64_t ver);
 
-// <linux/dma-buf.h>: DMA_BUF_SYNC_READ 1, WRITE 2, RW 3, START 4, END 8 (the ioctl's direction is whoever asks: START ends the CPU's access, END gives it back)
+// <linux/dma-buf.h>: START begins CPU access; END finishes it before GPU access.
 enum { DMA_BUF_SYNC_READ = 1, DMA_BUF_SYNC_WRITE = 2, DMA_BUF_SYNC_RW = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE,
-       DMA_BUF_SYNC_START = 4, DMA_BUF_SYNC_END = 8 };
+       DMA_BUF_SYNC_START = 0, DMA_BUF_SYNC_END = 4 };
 typedef struct { uint64_t serial, base, ver, fence; } ahbuse_t;   // a pool a submission uses: its serial and address, the version its END is for, that submission's fence
 static struct { ahbuse_t *v; int n, cap, head, cur; uint64_t gen; } g_use;
 // g_use.v[head, n): STARTed and waiting for their fence (an END passes head on); g_use.v[cur, n): noted since the last START, which has not run for them yet. A START
@@ -65,7 +65,7 @@ void vk_ahb_sync_start(uint64_t fence) {
     pthread_mutex_lock(&g_ahb_mu);
     int bad = 0;
     for (int i = g_use.cur; i < g_use.n; i++) {
-        if (vk_pool_sync(g_use.v[i].serial, g_use.v[i].base, DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW)) bad++;
+        if (vk_pool_sync(g_use.v[i].serial, g_use.v[i].base, DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW)) bad++;
         g_use.v[i].ver = vk_pool_bump(g_use.v[i].serial, g_use.v[i].base);   // (the version this END is for: a later submission's START moves past it)
         g_use.v[i].fence = fence;
     }
@@ -81,7 +81,7 @@ void vk_ahb_sync_end(uint64_t fence) {
     while (g_use.head < g_use.n && g_use.v[g_use.head].fence <= fence) {   // (the queue is in fence order: the completions come in that order too)
         ahbuse_t e = g_use.v[g_use.head++];
         if (!e.ver || vk_pool_stale(e.serial, e.base, e.ver)) continue;   // (written again since, or freed: nothing to invalidate)
-        vk_pool_sync(e.serial, e.base, DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW);
+        vk_pool_sync(e.serial, e.base, DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW);
     }
     if (g_use.head == g_use.n) { g_use.head = g_use.cur = g_use.n = 0; }
     else if (g_use.head > 4096) {   // (the front moves: what is still waiting goes back to the start of the array)
