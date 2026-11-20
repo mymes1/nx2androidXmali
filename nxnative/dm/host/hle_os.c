@@ -144,15 +144,22 @@ HLE_FORCE("getenv", "the game profile's game_env answers its names; the SDK's ow
 // Unicorn Overlord 1.05 (main c841ffe2…), the same engine: operator new (main+0x5a55d4) takes the calling thread's ring heap (bump allocator main+0x5b8504: cursor +0x20 starts at the base) and one kept base 0.
 //   Past the title screen the first allocation from it returned 0, which operator new's null check skipped, and the next returned 0x200; its constructor (main+0x5a3224 via main+0x4c754) wrote to 0x268.
 //   With the profile key, allocations of 64 KB or more are aligned to 64 KB (Allocate(size, 0x10000)), which puts the pool storage on a 64 KB boundary. Other games forward unchanged
+// Most games put SDK exports in a module named sdk. Some link them into main or a subsdk instead.
+// Read the original guest definition, not its forced-takeover relocation, so forwarding cannot recurse.
+// Preserve the existing SDK preference when one exists; only search loaded modules when it does not.
+static void *sdk_original(const char *name) {
+    for (int i = 0; i < g_nmod; i++)
+        if (!strcmp(g_mod[i].name, "sdk")) return module_sym(&g_mod[i], name);
+    return guest_sym(name);
+}
 static void *(*g_sa_alloc)(void *, size_t), *(*g_sa_alloc_al)(void *, size_t, size_t);
 static int g_sa_big_align;
 static pthread_once_t g_sa_once = PTHREAD_ONCE_INIT;
 static void sa_init(void) {
-    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
-    g_sa_alloc = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEm") : NULL;
-    g_sa_alloc_al = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEmm") : NULL;
-    if (!g_sa_alloc || !g_sa_alloc_al) die("StandardAllocator::Allocate not found in the SDK");
+    g_sa_alloc = sdk_original("_ZN2nn3mem17StandardAllocator8AllocateEm");
+    g_sa_alloc_al = sdk_original("_ZN2nn3mem17StandardAllocator8AllocateEmm");
     g_sa_big_align = DM_GAME_ALLOC_BIG_ALIGN;
+    if (!g_sa_alloc || (g_sa_big_align && !g_sa_alloc_al)) die("StandardAllocator::Allocate original not found in guest modules");
     if (g_sa_big_align) LOG("StandardAllocator::Allocate: allocations ≥ 64 KB are 64 KB aligned (game profile alloc_big_align: memory pool storage, see hle_os.c)");
 }
 HLE_FORCE("_ZN2nn3mem17StandardAllocator8AllocateEm", "passed straight to the SDK; with the profile's alloc_big_align (13 Sentinels, Unicorn Overlord) allocations ≥ 64 KB are 64 KB aligned (memory pool start)", void *, h_mem_SAAllocate, void *self, size_t size) {
@@ -169,10 +176,8 @@ static pthread_once_t g_ar_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_ar_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct { uint64_t a, n; } *g_ar; static int g_nar, g_car; static uint64_t g_ar_bytes, g_ar_top;
 static void ar_init(void) {
-    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
-    g_ar_alloc = ms ? module_sym(ms, "_ZN2nn2os21AllocateAddressRegionEPmm") : NULL;
-    g_ar_free = ms ? module_sym(ms, "_ZN2nn2os17FreeAddressRegionEm") : NULL;
-    if (!g_ar_alloc || !g_ar_free) die("nn::os::AllocateAddressRegion / FreeAddressRegion not found in the SDK");
+    g_ar_alloc = sdk_original("_ZN2nn2os21AllocateAddressRegionEPmm");
+    g_ar_free = sdk_original("_ZN2nn2os17FreeAddressRegionEm");
 }
 void svc_alias_range(uint8_t **base, size_t *size, uint64_t *mapped);   // hle_svc.c
 static void ar_log(const char *what, size_t size, Result r) {   // caller holds g_ar_mu
@@ -183,6 +188,7 @@ static void ar_log(const char *what, size_t size, Result r) {   // caller holds 
 }
 HLE_FORCE("_ZN2nn2os21AllocateAddressRegionEPmm", "passed straight to the SDK; the regions are counted, and a refusal is logged", Result, h_os_AllocAR, uint64_t *out, size_t size) {
     pthread_once(&g_ar_once, ar_init);
+    if (!g_ar_alloc) die("nn::os::AllocateAddressRegion original not found in guest modules");
     Result r = g_ar_alloc(out, size);
     pthread_mutex_lock(&g_ar_mu);
     if (r) { static int nred; if (nred++ < 8) ar_log("AllocateAddressRegion", size, r); }
@@ -205,9 +211,8 @@ HLE_FORCE("_ZN2nn2os21AllocateAddressRegionEPmm", "passed straight to the SDK; t
 static void (*g_sa_init)(void *, void *, size_t), (*g_sa_init_b)(void *, void *, size_t, bool);
 static pthread_once_t g_sa_init_once = PTHREAD_ONCE_INIT;
 static void sa_init_find(void) {
-    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
-    g_sa_init = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator10InitializeEPvm") : NULL;
-    g_sa_init_b = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator10InitializeEPvmb") : NULL;
+    g_sa_init = sdk_original("_ZN2nn3mem17StandardAllocator10InitializeEPvm");
+    g_sa_init_b = sdk_original("_ZN2nn3mem17StandardAllocator10InitializeEPvmb");
 }
 static size_t sa_cap(void *addr, size_t size) {
     if (addr) return size;
@@ -230,6 +235,7 @@ HLE_FORCE("_ZN2nn3mem17StandardAllocator10InitializeEPvmb", "passed to the SDK; 
 }
 HLE_FORCE("_ZN2nn2os17FreeAddressRegionEm", "passed straight to the SDK; the regions are counted", Result, h_os_FreeAR, uint64_t addr) {
     pthread_once(&g_ar_once, ar_init);
+    if (!g_ar_free) die("nn::os::FreeAddressRegion original not found in guest modules");
     Result r = g_ar_free(addr);
     pthread_mutex_lock(&g_ar_mu);
     for (int i = 0; i < g_nar; i++) if (g_ar[i].a == addr) {
