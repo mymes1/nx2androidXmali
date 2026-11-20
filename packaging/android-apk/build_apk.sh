@@ -9,8 +9,8 @@
 #   3. the tool's own tree and the Python modules, staged as the app's assets
 #   4. the APK (Gradle)
 #
-# The downloads are kept in packaging/android-apk/.cache (not committed). The payload release is private: the
-# download needs the gh CLI with access to NixPort/nixport-rootfs.
+# The downloads are kept in packaging/android-apk/.cache (not committed). The public payload release is
+# downloaded using the gh CLI from NixPort/nixport-rootfs.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 root=$PWD
