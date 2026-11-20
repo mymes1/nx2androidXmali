@@ -88,8 +88,8 @@ Java_com_nx_android_game_Native_motion(JNIEnv *E, jclass c, jint source, jint de
     if (idv) (*E)->ReleaseIntArrayElements(E, ids, idv, JNI_ABORT);
     if (xv) (*E)->ReleaseFloatArrayElements(E, xs, xv, JNI_ABORT);
     if (yv) (*E)->ReleaseFloatArrayElements(E, ys, yv, JNI_ABORT);
-    jfloat *av = axis && (*E)->GetArrayLength(E, axis) >= 10 ? (*E)->GetFloatArrayElements(E, axis, NULL) : NULL;
-    if (av) { for (int k = 0; k < 10; k++) e.axis[k] = av[k]; (*E)->ReleaseFloatArrayElements(E, axis, av, JNI_ABORT); }
+    jfloat *av = axis && (*E)->GetArrayLength(E, axis) >= 12 ? (*E)->GetFloatArrayElements(E, axis, NULL) : NULL;
+    if (av) { for (int k = 0; k < 12; k++) e.axis[k] = av[k]; (*E)->ReleaseFloatArrayElements(E, axis, av, JNI_ABORT); }
     return dm_java_input(&e) ? JNI_TRUE : JNI_FALSE;
 }
 

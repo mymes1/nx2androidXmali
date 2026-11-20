@@ -612,6 +612,7 @@
     <string name="pad_center_default">Default</string>
     <string name="pad_center_unbound">Not bound</string>
     <string name="pad_center_disabled">Disabled</string>
+    <string name="pad_center_occupied">Fallback · taken by %1$s</string>
     <string name="pad_center_capture">Press the button on the controller you want to use…</string>
     <string name="pad_center_reset">Restore the defaults</string>
     <string name="pad_center_calibration">Calibration</string>
@@ -622,6 +623,8 @@
     <string name="pad_center_events">Events</string>
     <string name="pad_conflict_title">That button is already spoken for</string>
     <string name="pad_conflict_text">%1$s is already bound to %2$s. Give it to the new button, swap the two, or leave it as it is.</string>
+    <string name="pad_conflict_default_text">%1$s is also the factory source of %2$s. Binding it here leaves %2$s without a source (the panel will show it), unless you bind something else to %3$s later.</string>
+    <string name="pad_conflict_bind_anyway">Bind anyway</string>
     <string name="pad_conflict_replace">Replace</string>
     <string name="pad_conflict_swap">Swap</string>
     <string name="pad_conflict_cancel">Cancel</string>

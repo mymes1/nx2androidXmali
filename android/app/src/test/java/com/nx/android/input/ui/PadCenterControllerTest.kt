@@ -273,4 +273,72 @@ class PadCenterControllerTest {
         assertEquals("b", f.controller.resolveTarget(7, 0, PadMapping.Key.BUTTON_A))
         assertTrue(PadTargets.isValid("a"))
     }
+
+    @Test
+    fun `a source that is another key's factory default waits with the default warning`() {
+        val f = Fixture()
+        // West 那颗按出厂字典是游戏的 Y：把它抓给 L 时要问一声（一只怪手柄的 L 与它共用来源时就是这样）
+        f.controller.capture(7, "l")
+        f.press(PadMapping.Scan.WEST)
+        f.release(PadMapping.Scan.WEST)
+
+        val hit = f.controller.conflict
+        assertNotNull(hit)
+        assertEquals("y", hit!!.defaultedTarget)
+        assertNull(hit.otherSource)   // 不是与别的绑定撞，是与出厂字典撞：不给交换
+    }
+
+    @Test
+    fun `binding anyway takes the source and the defaulted key falls empty`() {
+        val f = Fixture()
+        f.controller.capture(7, "l")
+        f.press(PadMapping.Scan.WEST)
+        f.release(PadMapping.Scan.WEST)
+        f.controller.resolveConflict(replace = true, swap = false)
+
+        val bindings = f.controller.profile(f.info()).bindings
+        assertEquals("l", bindings[PadSources.scan(PadMapping.Scan.WEST)])
+        // 游戏里 West 那颗现在是 L；它出厂时是 Y，如今再没有来源会给出 Y（落空，面板标出来）
+        assertEquals("y", PadMapping.defaultOwnerOf(PadSources.scan(PadMapping.Scan.WEST)))
+        assertEquals("l", f.controller.resolveTarget(7, PadMapping.Scan.WEST, PadMapping.Key.BUTTON_X))
+        assertTrue(bindings.values.none { it == "y" })
+        assertNull(f.controller.conflict)
+    }
+
+    @Test
+    fun `cancelling a factory collision keeps the dictionary`() {
+        val f = Fixture()
+        f.controller.capture(7, "l")
+        f.press(PadMapping.Scan.WEST)
+        f.release(PadMapping.Scan.WEST)
+        f.controller.resolveConflict(replace = false, swap = true)   // 交换在出厂撞车里也不起作用
+
+        assertTrue(f.controller.profile(f.info()).bindings.isEmpty())
+        assertEquals("y", f.controller.resolveTarget(7, PadMapping.Scan.WEST, PadMapping.Key.BUTTON_X))
+        assertNull(f.controller.conflict)
+    }
+
+    @Test
+    fun `a binding collision still offers the swap`() {
+        val f = Fixture()
+        f.controller.capture(7, "l")
+        f.press(PadMapping.Scan.WEST)
+        f.release(PadMapping.Scan.WEST)
+        f.controller.resolveConflict(replace = true, swap = false)
+
+        // 另一颗键也想要 L：这是绑定之间的撞车，交换还在
+        f.controller.capture(7, "l")
+        f.press(PadMapping.Scan.L1)
+        f.release(PadMapping.Scan.L1)
+
+        val hit = f.controller.conflict
+        assertNotNull(hit)
+        assertNull(hit!!.defaultedTarget)
+        assertEquals(PadSources.scan(PadMapping.Scan.WEST), hit.otherSource)
+        f.controller.resolveConflict(replace = false, swap = true)
+        assertEquals("l", f.controller.profile(f.info()).bindings[PadSources.scan(PadMapping.Scan.L1)])
+        // 交换把新源给 L、旧源让位（West 落回出厂的 Y——它出厂本来就是 Y）
+        assertNull(f.controller.profile(f.info()).bindings[PadSources.scan(PadMapping.Scan.WEST)])
+        assertEquals("y", f.controller.resolveTarget(7, PadMapping.Scan.WEST, PadMapping.Key.BUTTON_X))
+    }
 }

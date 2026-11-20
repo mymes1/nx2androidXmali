@@ -132,6 +132,16 @@ object PadMapping {
         return null
     }
 
+    /**
+     * 出厂字典里这个来源本来是谁的（不在字典里就是 null）：撞车提示用。
+     * 一个来源如果按出厂字典属于另一个游戏键，把它绑给玩家想要的键时那个键会落空——得说出来。
+     */
+    fun defaultOwnerOf(source: String, labels: Boolean = false): String? = when {
+        source.startsWith("scan:") -> defaultTarget(source.removePrefix("scan:").toIntOrNull() ?: 0, 0, labels)
+        source.startsWith("key:") -> defaultTarget(0, source.removePrefix("key:").toIntOrNull() ?: 0, labels)
+        else -> null
+    }
+
     /** 查表：玩家自己绑的先（扫描码优先，keyCode 兜底），没有就落回出厂字典。 */
     fun resolveButton(
         mapping: Map<String, String>,

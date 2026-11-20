@@ -128,4 +128,18 @@ class PadMappingTest {
         assertFalse(PadSources.isKnown("nonsense"))
         assertFalse(PadSources.isKnown("axis:0:+"))   // the sticks are not capturable
     }
+
+    @Test
+    fun `the factory owner of a source is the key it belongs to by default`() {
+        // 与出厂字典撞车的检测：把来源翻译回它出厂时的目标
+        assertEquals("y", PadMapping.defaultOwnerOf(PadSources.scan(PadMapping.Scan.WEST)))
+        assertEquals("a", PadMapping.defaultOwnerOf(PadSources.scan(PadMapping.Scan.EAST)))
+        assertEquals("zl", PadMapping.defaultOwnerOf(PadSources.scan(PadMapping.Scan.L2)))
+        assertEquals("x", PadMapping.defaultOwnerOf(PadSources.key(PadMapping.Key.BUTTON_X)))
+        assertEquals("up", PadMapping.defaultOwnerOf(PadSources.key(PadMapping.Key.DPAD_UP)))
+        // 轴来源与不在字典里的来源没有出厂主人
+        assertNull(PadMapping.defaultOwnerOf(PadSources.axis(17, 1f)))
+        assertNull(PadMapping.defaultOwnerOf(PadSources.scan(9999)))
+        assertNull(PadMapping.defaultOwnerOf("nonsense"))
+    }
 }

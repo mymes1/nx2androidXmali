@@ -376,6 +376,14 @@ touched. The key events carry the scan code now (`dm_java_event`'s `key_scan`, f
 is what makes a binding survive a change of phone. The calibration is per controller too: the dead zone is applied
 when the axis event comes in, the trigger's threshold when the button is derived from it.
 
+The pushed table also carries the controller's **axis roles** (`ztrig=1`, `rxstick=1` in the `dev` line): where its
+triggers and its right stick live. Not every family agrees — the NS and the old Android convention put the right
+stick on Z/RZ and the triggers on LTRIGGER/RTRIGGER, while the Xbox family (the USB `xpad`, the Bluetooth XInput
+mode) puts one-directional triggers on Z/RZ and the right stick on RX/RY. The app reads the controller's own axis
+ranges and works the roles out of them (a one-directional Z/RZ pair is a trigger pair), and the host consumes the
+axes by the roles: with no roles a controller plays exactly the way it always did. The motion event carries twelve
+axes now (RX/RY appended), which is what lets a role-swapped controller's right stick reach the game at all.
+
 The center itself is a Compose overlay over the game (`game/overlay/PadCenter.kt`, opened from the drawer's
 **Controls** tab): the controllers that are connected, what the selected one is doing (the scope), the bindings
 (one row per game key: rebind it by pressing the physical key, clear it), the calibration and the vibration test.

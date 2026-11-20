@@ -611,6 +611,7 @@
     <string name="pad_center_default">默认</string>
     <string name="pad_center_unbound">没有绑定</string>
     <string name="pad_center_disabled">已禁用</string>
+    <string name="pad_center_occupied">落空 · 被 %1$s 占着</string>
     <string name="pad_center_capture">按下你想用的那个手柄按键……</string>
     <string name="pad_center_reset">恢复默认</string>
     <string name="pad_center_calibration">校准</string>
@@ -621,6 +622,8 @@
     <string name="pad_center_events">事件</string>
     <string name="pad_conflict_title">这个键已经有别的用处</string>
     <string name="pad_conflict_text">%1$s 已经绑在 %2$s 上。给新按的那个、两个对调，或者什么都不改。</string>
+    <string name="pad_conflict_default_text">%1$s 按出厂字典也是 %2$s 的键。绑给它的话 %2$s 就没有来源了（面板上会标出来），除非之后给 %3$s 另绑别的键。</string>
+    <string name="pad_conflict_bind_anyway">仍要绑定</string>
     <string name="pad_conflict_replace">替换</string>
     <string name="pad_conflict_swap">交换</string>
     <string name="pad_conflict_cancel">取消</string>

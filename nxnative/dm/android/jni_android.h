@@ -22,7 +22,7 @@ typedef struct {
     int32_t action;    // motion: getAction() as Java carries it (the mask and the pointer index in place)
     int32_t pointers;  // motion: how many ptr[] entries hold this snapshot
     struct { int32_t id; float x, y; } ptr[16];
-    float axis[10];    // AMOTION_EVENT_AXIS_X Y Z RZ LTRIGGER RTRIGGER HAT_X HAT_Y, then BRAKE, GAS (0 where the device has none)
+    float axis[12];    // AMOTION_EVENT_AXIS_X Y Z RZ LTRIGGER RTRIGGER HAT_X HAT_Y, then BRAKE, GAS, RX, RY (0 where the device has none)
 } dm_java_event;
 
 // the shared core, driven from the player (jni_android.c's JNI surface: Java class com.nx.android.game.Native)

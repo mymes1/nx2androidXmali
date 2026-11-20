@@ -33,6 +33,7 @@ object GamepadScan {
         val capabilitySignature: String,
         val modelTemplateKey: String?,
         val requiresProfileConfirmation: Boolean,
+        val roles: PadAxes.Roles = PadAxes.Roles(),
     )
 
     private val mutableDevices = MutableStateFlow<List<Info>>(emptyList())
@@ -115,6 +116,7 @@ object GamepadScan {
                 capabilitySignature = identity.capabilitySignature,
                 modelTemplateKey = identity.modelTemplateKey,
                 requiresProfileConfirmation = identity.requiresConfirmation,
+                roles = PadAxes.rolesOf(d),
             )
         }
     }

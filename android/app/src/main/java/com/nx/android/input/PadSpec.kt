@@ -24,6 +24,8 @@ object PadSpec {
         val player: Int = 0,
         val calibration: PadCalibration = PadCalibration(),
         val bindings: Map<String, String> = emptyMap(),
+        val zTrig: Boolean = false,   // 它的扳机在 Z/RZ（单向）：宿主从这两根轴取 ZL/ZR
+        val rxStick: Boolean = false, // 它的右摇杆在 RX/RY：宿主的右摇杆改吃这两根轴
     )
 
     /** 整张表。 */
@@ -35,7 +37,9 @@ object PadSpec {
                 .append(" player=").append(device.player)
                 .append(" dz=").append(format(device.calibration.deadzone))
                 .append(" tr=").append(format(device.calibration.trigger))
-                .append('\n')
+            if (device.zTrig) out.append(" ztrig=1")
+            if (device.rxStick) out.append(" rxstick=1")
+            out.append('\n')
             for ((source, target) in device.bindings.toSortedMap()) {
                 if (!PadSources.isKnown(source)) continue
                 if (target == PadSources.DISABLED) {

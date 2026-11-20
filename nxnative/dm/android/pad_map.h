@@ -7,7 +7,7 @@
 // host has no JSON parser):
 //
 //   v1
-//   dev 3 labels=1 dz=0.15 tr=0.55 player=1
+//   dev 3 labels=1 dz=0.15 tr=0.55 player=1 ztrig=1 rxstick=1
 //   bind scan:305 a
 //   unbind scan:314
 //   dev 7 labels=0 dz=0.12 tr=0.5
@@ -69,8 +69,9 @@ enum { PAD_N = sizeof pad_buttons / sizeof pad_buttons[0] };
 #define PAD_DEFAULT_DEADZONE 0.12f
 #define PAD_DEFAULT_TRIGGER 0.5f
 
-// The Android axis ids the event carries (MotionEvent's): the event's axis array is X Y Z RZ LTRIGGER RTRIGGER HAT_X HAT_Y BRAKE GAS.
+// The Android axis ids the event carries (MotionEvent's): the event's axis array is X Y Z RZ LTRIGGER RTRIGGER HAT_X HAT_Y BRAKE GAS RX RY.
 enum {
+    PAD_AXIS_Z = 11, PAD_AXIS_RX = 12, PAD_AXIS_RY = 13, PAD_AXIS_RZ = 14,
     PAD_AXIS_LTRIGGER = 17, PAD_AXIS_RTRIGGER = 18, PAD_AXIS_HAT_X = 15, PAD_AXIS_HAT_Y = 16,
     PAD_AXIS_GAS = 22, PAD_AXIS_BRAKE = 23,
 };
@@ -82,13 +83,15 @@ enum {
 // One binding: the source (a "scan:305" or "key:96" string) and the target (a PAD_* index, or -1 for disabled).
 typedef struct { char source[PAD_MAP_SRC_MAX]; int target; } pad_map_binding;
 
-// One device's table: the bindings, the face buttons' flip, the calibration and the player it plays.
+// One device's table: the bindings, the face buttons' flip, the calibration, the axis roles and the player it plays.
 typedef struct {
     int device;          // the Android input device id
     int labels;          // 1: the face buttons by their label, 0: by their position
     int player;          // 0: player 1, 1..7: players 2..8, -1: set aside (the controller does nothing)
     float deadzone;      // < 0: the default
     float trigger;       // < 0: the default
+    int ztrig;           // 1: this device's analog triggers live on Z/RZ (they are one-directional there), not on LTRIGGER/RTRIGGER
+    int rxstick;         // 1: this device's right stick lives on RX/RY, not on Z/RZ
     int nbindings;
     pad_map_binding bindings[PAD_MAP_MAX_BINDINGS];
 } pad_map_device;
@@ -216,6 +219,8 @@ static inline int pad_map_parse(pad_map_t *m, const char *spec) {
             cur->player = pad_map_value(line, "player", 0);   // 0: player 1 (the default), -1: set aside
             cur->deadzone = pad_map_float(line, "dz", -1);
             cur->trigger = pad_map_float(line, "tr", -1);
+            cur->ztrig = pad_map_value(line, "ztrig", 0);     // the axis roles: the app works them out from the device's own ranges;
+            cur->rxstick = pad_map_value(line, "rxstick", 0); // a device without them plays the way it always did
         } else if (!strncmp(line, "bind ", 5) && cur) {
             char source[PAD_MAP_SRC_MAX] = {0}, target[PAD_MAP_SRC_MAX] = {0};
             if (sscanf(line + 5, "%23s %23s", source, target) != 2) continue;
@@ -292,6 +297,16 @@ static inline float pad_map_deadzone(const pad_map_t *m, int device) {
 static inline float pad_map_trigger(const pad_map_t *m, int device) {
     const pad_map_device *d = pad_map_device_of(m, device);
     return d && d->trigger >= 0 ? d->trigger : PAD_DEFAULT_TRIGGER;
+}
+
+// The axis roles for a device (0 when the table has no rows for it): where its triggers and its right stick live.
+static inline int pad_map_ztrig(const pad_map_t *m, int device) {
+    const pad_map_device *d = pad_map_device_of(m, device);
+    return d ? d->ztrig : 0;
+}
+static inline int pad_map_rxstick(const pad_map_t *m, int device) {
+    const pad_map_device *d = pad_map_device_of(m, device);
+    return d ? d->rxstick : 0;
 }
 
 // The bit an analog axis carries: the player's own binding for that half of the axis, else nothing (the triggers

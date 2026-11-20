@@ -164,23 +164,30 @@ fun PadMappingPanel(
         )
     }
 
-    // 撞车了：让玩家选（替换 / 交换 / 取消）
+    // 撞车了：让玩家选。与别的绑定撞：替换 / 交换 / 取消；与出厂字典撞（一个来源驱动不了两颗键）：
+    // 仍要绑定（原来那个键落空，面板上标出来）/ 取消
     controller.conflict?.let { hit ->
+        val withDefault = hit.defaultedTarget != null
         AlertDialog(
             onDismissRequest = { controller.resolveConflict(replace = false, swap = false) },
             title = { Text(stringResource(R.string.pad_conflict_title)) },
             text = {
-                Text(stringResource(R.string.pad_conflict_text, hit.source, hit.target))
+                Text(
+                    if (withDefault) stringResource(R.string.pad_conflict_default_text, hit.source, hit.target, hit.defaultedTarget!!)
+                    else stringResource(R.string.pad_conflict_text, hit.source, hit.target)
+                )
             },
             confirmButton = {
                 TextButton(onClick = { controller.resolveConflict(replace = true, swap = false) }) {
-                    Text(stringResource(R.string.pad_conflict_replace))
+                    Text(stringResource(if (withDefault) R.string.pad_conflict_bind_anyway else R.string.pad_conflict_replace))
                 }
             },
             dismissButton = {
                 Row {
-                    TextButton(onClick = { controller.resolveConflict(replace = false, swap = true) }) {
-                        Text(stringResource(R.string.pad_conflict_swap))
+                    if (!withDefault) {
+                        TextButton(onClick = { controller.resolveConflict(replace = false, swap = true) }) {
+                            Text(stringResource(R.string.pad_conflict_swap))
+                        }
                     }
                     TextButton(onClick = { controller.resolveConflict(replace = false, swap = false) }) {
                         Text(stringResource(R.string.pad_conflict_cancel))
@@ -191,14 +198,18 @@ fun PadMappingPanel(
     }
 }
 
-/** 一个绑定显示成什么：玩家自己绑的源，没有就显示出厂的那个。 */
+/** 一个绑定显示成什么：玩家自己绑的源；没有绑的话，出厂的那个——除非出厂的那个已经被别的键占走（落空）。 */
 @Composable
 private fun bindingText(target: String, bound: String?, profile: PadProfileStore.Profile): String = when {
     bound != null && bound != PadSources.DISABLED -> bound
     bound == PadSources.DISABLED -> stringResource(R.string.pad_center_disabled)
     else -> {
         val default = PadMapping.defaultSourceFor(target, profile.labels)
-        if (default != null) stringResource(R.string.pad_center_default) + " · " + default
-        else stringResource(R.string.pad_center_unbound)
+        val owner = default?.let { profile.bindings[it] }
+        when {
+            default == null -> stringResource(R.string.pad_center_unbound)
+            owner != null && owner != target -> stringResource(R.string.pad_center_occupied, owner)
+            else -> stringResource(R.string.pad_center_default) + " · " + default
+        }
     }
 }

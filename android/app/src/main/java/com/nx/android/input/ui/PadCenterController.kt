@@ -43,6 +43,7 @@ class PadCenterController(
         val target: String,      // 他想绑的游戏键
         val otherSource: String?,   // 原来占着这个目标键的物理键
         val otherTarget: String?,   // 玩家按下的那个键原来绑着什么
+        val defaultedTarget: String? = null, // 按出厂字典这个来源本来是谁的（只有它与别的撞车时不给交换：一个来源驱动不了两颗键）
     )
 
     private val loaded = store.load()
@@ -98,9 +99,15 @@ class PadCenterController(
         val hit = PadMapping.conflict(profile.bindings, source, target)
         if (hit != null) {
             conflict = Conflict(deviceId, source, target, hit.targetSource, hit.sourceTarget)
-        } else {
-            save(profile.copy(bindings = PadMapping.withBinding(profile.bindings, source, target)))
+            return
         }
+        // 与出厂字典撞车：这个来源按出厂是另一个键的。绑下去那个键就落空了——明说，让玩家选。
+        val owner = PadMapping.defaultOwnerOf(source, profile.labels)
+        if (owner != null && owner != target && owner != PadSources.DISABLED) {
+            conflict = Conflict(deviceId, source, target, otherSource = null, otherTarget = null, defaultedTarget = owner)
+            return
+        }
+        save(profile.copy(bindings = PadMapping.withBinding(profile.bindings, source, target)))
     }
 
     /** 玩家选了：替换（新的顶掉旧的）、交换（两个对调）、取消（什么都不做）。 */
@@ -110,7 +117,7 @@ class PadCenterController(
         val info = device(hit.deviceId) ?: return
         val profile = profile(info)
         val bindings = when {
-            swap -> PadMapping.swapBinding(profile.bindings, hit.source, hit.target)
+            swap && hit.defaultedTarget == null -> PadMapping.swapBinding(profile.bindings, hit.source, hit.target)
             replace -> PadMapping.withBinding(profile.bindings, hit.source, hit.target)
             else -> profile.bindings
         }
@@ -260,11 +267,11 @@ class PadCenterController(
     }
 }
 
-/** 这只设备的可抓轴（扳机与十字键帽）与它们此刻的值。 */
+/** 这只设备的可抓轴（扳机与十字键帽）与它们此刻的值：Z/RZ 只在这只手柄的量程单向（形似扳机）时进来。 */
 fun capturableAxes(event: MotionEvent): List<Pair<Int, Float>> =
     event.device?.motionRanges.orEmpty()
         .filter { it.isFromSource(InputDevice.SOURCE_JOYSTICK) }
-        .filter { PadSources.isCapturableAxis(it.axis) }
+        .filter { PadSources.bindableRange(it.axis, it.min) }
         .map { it.axis to event.getAxisValue(it.axis) }
 
 /** 测振动：设备马达优先，机身兜底（蓝牙手柄常常没有马达）。 */

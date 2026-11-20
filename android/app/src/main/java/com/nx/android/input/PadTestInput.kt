@@ -102,11 +102,12 @@ object PadTestInput {
         }
         val leftX = stick(MotionEvent.AXIS_X)
         val leftY = stick(MotionEvent.AXIS_Y)
-        // The right stick: some pads report it as RX/RY, others as Z/RZ (the GameSir-X5 Lite:
-        // the kernel says ABS_Z/ABS_RZ, and Android keeps those names). Whichever the device
-        // has, the right stick is the right stick.
-        val rightX = if (MotionEvent.AXIS_RX in ranges) stick(MotionEvent.AXIS_RX) else stick(MotionEvent.AXIS_Z)
-        val rightY = if (MotionEvent.AXIS_RY in ranges) stick(MotionEvent.AXIS_RY) else stick(MotionEvent.AXIS_RZ)
+        // The right stick from the device's own roles — the same read the game gets (the app works them
+        // out of the ranges and pushes them to the host): RX/RY when the device is that kind, Z/RZ otherwise.
+        val rxStick = GamepadScan.devices.value.firstOrNull { it.id == device.id }?.roles?.rxStick
+            ?: (MotionEvent.AXIS_RX in ranges)
+        val rightX = if (rxStick) stick(MotionEvent.AXIS_RX) else stick(MotionEvent.AXIS_Z)
+        val rightY = if (rxStick) stick(MotionEvent.AXIS_RY) else stick(MotionEvent.AXIS_RZ)
         val hatX = value(MotionEvent.AXIS_HAT_X)
         val hatY = value(MotionEvent.AXIS_HAT_Y)
         val directions = buildSet {

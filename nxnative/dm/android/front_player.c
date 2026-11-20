@@ -536,23 +536,50 @@ static int handle_event(const dm_java_event *e) {
         haptics_device(p, e->device);   // this controller's motor is this player's
         float *ax = g_ax[p];
         float dz = pad_map_deadzone(&g_map, e->device);   // the stick's dead zone: the device's own (the default when it has none)
-        for (int i = 0; i < 4; i++) { float v = e->axis[i]; ax[i] = (v > -dz && v < dz) ? 0 : v; }
-        ax[4] = e->axis[4]; ax[5] = e->axis[5];
+        int ztrig = pad_map_ztrig(&g_map, e->device);     // the app's read of this device's axes: its triggers are one-directional Z/RZ
+        int rxstick = pad_map_rxstick(&g_map, e->device); // and its right stick is on RX/RY (a device with no roles plays the old way)
+        // The left stick always comes from X/Y; the right one from RX/RY when the device is that kind, from Z/RZ
+        // otherwise (a Z/RZ-trigger device without RX/RY has no right stick we know of: it stays at rest).
+        for (int i = 0; i < 2; i++) { float v = e->axis[i]; ax[i] = (v > -dz && v < dz) ? 0 : v; }
+        if (rxstick) {
+            for (int i = 0; i < 2; i++) { float v = e->axis[10 + i]; ax[2 + i] = (v > -dz && v < dz) ? 0 : v; }
+        } else if (!ztrig) {
+            for (int i = 0; i < 2; i++) { float v = e->axis[2 + i]; ax[2 + i] = (v > -dz && v < dz) ? 0 : v; }
+        } else {
+            ax[2] = 0; ax[3] = 0;
+        }
+        // The triggers: from Z/RZ when the device is that kind (the array's slots 2 and 3), from LTRIGGER/RTRIGGER
+        // otherwise, with BRAKE/GAS standing in when those read 0.
+        if (ztrig) {
+            ax[4] = e->axis[2]; ax[5] = e->axis[3];
+        } else {
+            ax[4] = e->axis[4]; ax[5] = e->axis[5];
+            if (ax[4] == 0) ax[4] = e->axis[8]; if (ax[5] == 0) ax[5] = e->axis[9];
+        }
         ax[6] = e->axis[6]; ax[7] = e->axis[7];
-        if (ax[4] == 0) ax[4] = e->axis[8]; if (ax[5] == 0) ax[5] = e->axis[9];
         // the analog buttons: the triggers (the device's threshold), the hat and the player's own axis bindings.
-        // A pad may report its triggers as LTRIGGER/RTRIGGER or as BRAKE/GAS (the event's array puts BRAKE at 8 and GAS at 9),
-        // so both ids are looked up for each of the two trigger slots.
+        // Each slot looks up the ids that can carry it: LTRIGGER and BRAKE for the left one, RTRIGGER and GAS for
+        // the right one — or plain Z/RZ when the device is that kind.
         float tr = pad_map_trigger(&g_map, e->device);
         uint64_t ab = 0;
-        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_LTRIGGER) && !pad_map_has_axis(&g_map, e->device, PAD_AXIS_BRAKE) && ax[4] > tr) ab |= DM_BTN_ZL;
-        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_RTRIGGER) && !pad_map_has_axis(&g_map, e->device, PAD_AXIS_GAS) && ax[5] > tr) ab |= DM_BTN_ZR;
+        if (ztrig) {
+            if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_Z) && ax[4] > tr) ab |= DM_BTN_ZL;
+            if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_RZ) && ax[5] > tr) ab |= DM_BTN_ZR;
+        } else {
+            if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_LTRIGGER) && !pad_map_has_axis(&g_map, e->device, PAD_AXIS_BRAKE) && ax[4] > tr) ab |= DM_BTN_ZL;
+            if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_RTRIGGER) && !pad_map_has_axis(&g_map, e->device, PAD_AXIS_GAS) && ax[5] > tr) ab |= DM_BTN_ZR;
+        }
         if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_HAT_X)) { if (ax[6] < -0.5f) ab |= DM_BTN_LEFT; if (ax[6] > 0.5f) ab |= DM_BTN_RIGHT; }
         if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_HAT_Y)) { if (ax[7] < -0.5f) ab |= DM_BTN_UP; if (ax[7] > 0.5f) ab |= DM_BTN_DOWN; }
-        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_LTRIGGER, ax[4]);
-        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_BRAKE, ax[4]);
-        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_RTRIGGER, ax[5]);
-        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_GAS, ax[5]);
+        if (ztrig) {
+            ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_Z, ax[4]);
+            ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_RZ, ax[5]);
+        } else {
+            ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_LTRIGGER, ax[4]);
+            ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_BRAKE, ax[4]);
+            ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_RTRIGGER, ax[5]);
+            ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_GAS, ax[5]);
+        }
         ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_HAT_X, ax[6]);
         ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_HAT_Y, ax[7]);
         g_axis_btn[p] = ab;

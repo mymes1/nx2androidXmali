@@ -39,13 +39,25 @@ object PadSources {
         }
     }
 
-    /** 这个轴能绑吗：扳机与十字键帽可以，摇杆的四轴不行（它们是模拟量，有自己的校准）。 */
+    /**
+     * 这个轴能绑吗：扳机与十字键帽可以，摇杆的双向轴不行（它们是模拟量，有自己的校准）。
+     * Z/RZ 也在这里——但**只对单向量程的手柄**（它们在那类手柄上是扳机；见 [bindableRange]）：
+     * 老约定里 Z/RZ 是右摇杆，那一类上手柄中心不会把它们当可绑的轴喂进来。
+     */
     fun isCapturableAxis(axis: Int): Boolean = when (axis) {
         15, 16 -> true    // AXIS_HAT_X, AXIS_HAT_Y
         17, 18 -> true    // AXIS_LTRIGGER, AXIS_RTRIGGER
         22, 23 -> true    // AXIS_GAS, AXIS_BRAKE
+        11, 14 -> true    // AXIS_Z, AXIS_RZ：只有单向（形似扳机）才算，量程在抓键处判
         else -> false
     }
+
+    /**
+     * 这个轴**这只手柄上**能绑吗：Z/RZ 只有单向（量程从 0 起，形似扳机）才可绑——那是拓扑探测
+     * 失手时玩家的自救出口；双向的 Z/RZ 是右摇杆，不参与改键。其余可绑的轴不看量程。
+     */
+    fun bindableRange(axis: Int, min: Float): Boolean =
+        isCapturableAxis(axis) && !((axis == 11 || axis == 14) && min < 0f)
 
     /** Android 的 axis id（MotionEvent 的常量），推给宿主时用。 */
     const val AXIS_HAT_X = 15

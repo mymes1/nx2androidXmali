@@ -121,6 +121,39 @@ static void axes(void) {
     assert(pad_map_has_axis(&map, 5, PAD_AXIS_LTRIGGER) == 1);
     assert(pad_map_axis_bit(&map, 5, PAD_AXIS_LTRIGGER, 0.9f) == DM_BTN_ZL);
     assert(pad_map_axis_bit(&map, 5, PAD_AXIS_LTRIGGER, -0.9f) == 0);
+    // the Z/RZ ids carry sources the same way ("axis:11:+"), and the player's binding on them
+    // is the app-side capture's business: the table just keeps it
+    assert(pad_map_parse(&map, "v1\ndev 6 labels=0\nbind axis:11:+ zl\nbind axis:14:+ zr\n") == 1);
+    assert(pad_map_has_axis(&map, 6, PAD_AXIS_Z) == 1);
+    assert(pad_map_has_axis(&map, 6, PAD_AXIS_RZ) == 1);
+    assert(pad_map_axis_bit(&map, 6, PAD_AXIS_Z, 0.9f) == DM_BTN_ZL);
+    assert(pad_map_axis_bit(&map, 6, PAD_AXIS_RZ, 0.9f) == DM_BTN_ZR);
+}
+
+static void roles(void) {
+    pad_map_t map;
+    // a device with no rows: the roles are off (the way it always played)
+    assert(pad_map_parse(&map, "v1\ndev 1 labels=0\n") == 1);
+    assert(pad_map_ztrig(&map, 1) == 0);
+    assert(pad_map_rxstick(&map, 1) == 0);
+    assert(pad_map_ztrig(&map, 99) == 0);   // a device the table does not know either
+    assert(pad_map_rxstick(&map, 99) == 0);
+
+    // the roles ride in the dev line; a line without them keeps them off
+    assert(pad_map_parse(&map,
+        "v1\n"
+        "dev 2 labels=0 ztrig=1 rxstick=1\n"
+        "dev 3 labels=0 ztrig=1\n"
+        "dev 4 labels=0 tr=0.5\n") == 3);
+    assert(pad_map_ztrig(&map, 2) == 1 && pad_map_rxstick(&map, 2) == 1);
+    assert(pad_map_ztrig(&map, 3) == 1 && pad_map_rxstick(&map, 3) == 0);
+    assert(pad_map_ztrig(&map, 4) == 0 && pad_map_rxstick(&map, 4) == 0);
+
+    // the roles live beside the rest of the device's rows (the calibration reads back fine)
+    assert(pad_map_trigger(&map, 4) == PAD_DEFAULT_TRIGGER);
+    assert(pad_map_parse(&map, "v1\ndev 5 labels=0 tr=0.7 ztrig=1 rxstick=1\n") == 1);
+    assert(pad_map_trigger(&map, 5) > 0.699f && pad_map_trigger(&map, 5) < 0.701f);
+    assert(pad_map_ztrig(&map, 5) == 1 && pad_map_rxstick(&map, 5) == 1);
 }
 
 static void broken(void) {
@@ -134,6 +167,7 @@ int main(void) {
     defaults();
     table();
     axes();
+    roles();
     broken();
     printf("pad_map ok\n");
     return 0;
