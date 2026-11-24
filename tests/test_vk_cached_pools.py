@@ -17,7 +17,9 @@ class CachedPools(unittest.TestCase):
         ndk, _ = find_ndk()
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
-            self.skipTest('NDK Vulkan headers are required')
+            headers = Path(__file__).resolve().parents[1] / 'nxnative/dm/third_party/vulkan-headers/include'
+        if not (headers / 'vulkan/vulkan_core.h').is_file():
+            self.skipTest('Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
         start = src.index('static void pool_cache_sync(')
         function = csrc.function(src, 'static void pool_cache_sync(')
@@ -77,7 +79,9 @@ int main(void) {
         ndk, _ = find_ndk()
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
-            self.skipTest('NDK Vulkan headers are required')
+            headers = Path(__file__).resolve().parents[1] / 'nxnative/dm/third_party/vulkan-headers/include'
+        if not (headers / 'vulkan/vulkan_core.h').is_file():
+            self.skipTest('Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
         wait = csrc.function(src, 'static void wait_fence(uint64_t f) {')
         completion = next(line for line in src.splitlines() if 'g_fring[c->fence % NFRING]' in line)
@@ -121,14 +125,16 @@ COMPLETION
         ndk, _ = find_ndk()
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
-            self.skipTest('NDK Vulkan headers are required')
+            headers = Path(__file__).resolve().parents[1] / 'nxnative/dm/third_party/vulkan-headers/include'
+        if not (headers / 'vulkan/vulkan_core.h').is_file():
+            self.skipTest('Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
         def function(name):
             start = src.index(name)
             return src[start:src.index('\n}\n', start)+3]
         usage = csrc.between(src, 'static const VkBufferUsageFlags POOL_USAGE0', 'static VkResult pool_copied_alloc(')
-        start = src.index('        const char *e = getenv("DM_VK_POOL_CACHED")')
-        select = src[start:src.index('\n    }\n    pthread_rwlock_wrlock(&g_pool_mu);', start)]
+        copy_src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_poolcopy.inc').read_text()
+        select = csrc.function(copy_src, 'static void copy_pool_alloc(')
         harness = r'''
 #define _GNU_SOURCE
 #define VK_NO_PROTOTYPES
@@ -192,8 +198,9 @@ MEM_TYPE
 USAGE
 ALLOCATE
 CACHE
-static void create(vkpool_t *p, uint64_t size) {
 SELECT
+static void create(vkpool_t *p, uint64_t size) {
+    copy_pool_alloc(p, size);
 }
 static void drop(vkpool_t *p) {
     assert(p->buf && p->mem && p->shadow==storage && buffers==1 && memories==1 && mapped==1);
