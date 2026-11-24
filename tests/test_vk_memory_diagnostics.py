@@ -188,6 +188,11 @@ static void vkFreeMemory(VkDevice d, VkDeviceMemory m, const void *alloc) { (voi
 HELPERS
 FUNCTION
 int main(void) {
+    // The production diagnostic helpers still use this switch. Exercise it
+    // explicitly: zero-copy failures now log without it, so this isolated
+    // harness would otherwise leave mem_diag_on unused under -Werror.
+    const char *diag = getenv("DM_VK_MEM_DIAG");
+    assert(mem_diag_on() == (diag && atoi(diag) != 0));
     static const char *const names[] = {"size", "AHardwareBuffer_allocate", "socketpair", "AHardwareBuffer_sendHandleToUnixSocket", "recv_fds", "mmap-temporary", "mmap-fixed", "vkGetAndroidHardwareBufferPropertiesANDROID", "vkCreateBuffer", "vkAllocateMemory", "vkBindBufferMemory"};
     uint8_t memory[64]; memset(memory, 23, sizeof memory);
     for (failure = 0; failure <= 10; failure++) {
