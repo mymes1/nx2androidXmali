@@ -25,6 +25,8 @@
 #   · BEA (NintendoWare Bezel Engine archives, Big Brain Academy: Brain vs. Brain): BNSH in the .bfsha entries of the archives (zstd entries), see bea_members
 #   · GFPAK (Game Freak, Pokémon Legends: Arceus): BNSH entries of the archives under bin/archive (Oodle Kraken, decoded by the game's own decoder when DM_OODLE_HOST is set), see gfpak_members
 #   · MGFX (MonoGame effects, Celeste): the effects in its XNB files and SpriteBatch's in main, each shader a control section and a code area, see mgfx_effect
+#   · HNSHV002 / HHNEEDLE (Needle, Sonic Frontiers): bounded NVN shader containers in main and shader files, see needle_shaders
+#     Backported from mymes1/droidplay-core's Needle reader and Frontiers fix 5b34f894d3 (docs/SONIC_FRONTIERS.md).
 #   · dvdbnd (FromSoftware, Dark Souls Remastered): GLSLC outputs in the BND3 archives (DCX zlib entries) of the .bdt files, indexed by the .bhd5 beside each, see bhd5_entries and bdt_shaders
 #   · data.arc (Super Smash Bros. Ultimate, smash_arc.py): GLSLC outputs in its SSBH shader databases and BNSH in its effects and UI layouts, each of its current files (zstd) scanned, see smash_arc_jobs
 #   · PKZ (PlatinumGames, Bayonetta 3): shader objects (VSO / PSO / CSO / HSO / DSO, a control section and a code area each) in the DAT archives of the PKZ entries (Oodle Kraken, decoded by the
@@ -957,6 +959,88 @@ def mgfx_shaders(d, label):
     if label.endswith('.xnb') and b'EffectReader' in d[:0x200] and not out: red(f'{label}: an XNB effect without an MGFX version 8 effect of NVN shaders')
     return out
 
+NEEDLE, NEEDLE_FILE = b'HNSHV002', b'HHNEEDLE'
+NEEDLE_DESC = 0x90   # the NVN section descriptor's size in the containers first read (Persona 5 Royal), whose +0x30 holds how far its control section lies from its start, which is
+# the descriptor's own size: a container whose descriptor is another size (Hedgehog Engine 2's shader files, below) is found by that self-consistency, not assumed
+
+
+def needle_desc(d, c, lo, end, ctl, first=None):
+    """The descriptor of the NVN section whose control section starts at c: (its start, its size), or None. Its +0x30 words are the control offset (the descriptor's own size),
+    the code offset, the code length and the control length, all relative to the descriptor's start; a candidate counts only when every one of those agrees with the control
+    section itself (its own length at +0x20) and fits the container. 0x90 bytes is what the containers first read use, so it is tried first, then every other size near it."""
+    order = [first, NEEDLE_DESC] if first else [NEEDLE_DESC]   # this container's own size (a container's sections agree), then 0x90's neighbours
+    order += sorted((x for x in range(0x20, 0x401, 4) if x not in order), key=lambda x: (abs(x - NEEDLE_DESC), x))
+    for q in order:
+        s = c - q
+        if s < lo or s + 0x40 > end: continue
+        co, ko, kn, cn = struct.unpack_from('<4I', d, s + 0x30)
+        if co != q or not 0x760 <= cn or cn != ctl or not kn or ko < co + cn or max(co + cn, ko + kn) > end - s: continue
+        return s, q
+    return None
+
+
+def needle_adjacent(d, c, end, ctl):
+    """The section at c as a control section followed directly by its code area — the layout of every other NVN container in this file (YEBIS's effects, Advance Wars' Bink
+    shaders): the control's own length (+0x20), the code's (+0x704). → (control, code) or None. A shader file of Hedgehog Engine 2's keeps these without the 0x90 descriptor."""
+    if not 0x760 <= ctl or ctl > end - c or c + 0x708 > end: return None
+    kn = struct.unpack_from('<I', d, c + 0x704)[0]
+    if not kn: return None
+    for a in (-(-(c + ctl) // 16) * 16, c + ctl):   # the code areas follow at a 16-byte alignment, or as they lie (SDK 10's headerless compute)
+        if a + kn <= end: return d[c:c + ctl], d[a:a + kn]
+    return None
+
+
+def needle_shaders(d, label):
+    """Needle shader containers: HNSHV002 in the shader blobs of main and of GFD's GSC files inside CRI CPKs (Persona 5 Royal), and in Hedgehog Engine 2's shader files
+    (Sonic Frontiers' ShaderParam .pac: HHNEEDLE, a shader path, then an HNSHV002 archive of the shader's permutations and their variants' NVN payloads). An HNSHV002 archive
+    starts with its magic and the length of the container at +8, big-endian. Each NVN payload is a control section and a code area, with a 0x90-byte descriptor before the
+    control section in the containers first read (+0x30 the control offset, +0x34 the code offset, +0x38 the code length, +0x3c the control length, all relative to the
+    descriptor's start). Both regions must fit the container, not merely the enclosing file, and the control and code headers and lengths must agree — or, in a payload
+    that has no descriptor, the code area directly follows the control section. Each payload is a separate program, including the 121 post-effect variants in main and
+    every variant of a shader file; vertex/pixel pairs exist only at draw time. A section that cannot be read is left out and said (a file's other sections are kept): one
+    unreadable payload used to fail the whole file, which for a shader file of Hedgehog Engine 2's is every material shader the game has."""
+    out, problems = [], []
+
+    def sections(h, end):
+        c = d.find(CTL_MAGIC, h + 12, end); first = None   # first: the descriptor size this container's sections use, tried first for the rest
+        while c >= 0:
+            ctl_n = struct.unpack_from('<I', d, c + 0x20)[0] if c + 0x24 <= end else 0
+            desc = needle_desc(d, c, h + 12, end, ctl_n, first) if ctl_n else None
+            if desc: first = desc[1]
+            if desc:
+                s = desc[0]; co, ko, kn, cn = struct.unpack_from('<4I', d, s + 0x30)
+                ctl, code, at, after = d[c:c + cn], d[s + ko:s + ko + kn], s, s + max(co + cn, ko + kn)
+            else:
+                got = needle_adjacent(d, c, end, ctl_n)
+                if not got:
+                    problems.append(f'{label} NEEDLE @{h:#x}: the control section at {c:#x} has neither a descriptor nor a code area of its own')
+                    c = d.find(CTL_MAGIC, c + 4, end); continue
+                ctl, code = got; at, after = c, c + len(ctl) + len(code)
+            st = glslc_stage(ctl, code)
+            why = check(label, st, ctl, code) if st else 'unknown shader stage'
+            if why:
+                problems.append(f'{label} NEEDLE @{h:#x}: NVN section at {at:#x}: {why}')
+                c = d.find(CTL_MAGIC, c + 4, end); continue
+            out.append((f'{label}#NEEDLE@{at:#x}', st, ctl, code))
+            c = d.find(CTL_MAGIC, max(after, c + 4), end)
+
+    regions = []
+    for m in re.finditer(re.escape(NEEDLE_FILE), d):   # a whole shader file: its own length at +8, then the archive of its variants
+        p = m.start(); n = struct.unpack_from('>I', d, p + 8)[0] if p + 12 <= len(d) else 0
+        if not n or n > len(d) - p: continue
+        k = d.find(NEEDLE, p + 12, p + n)
+        if k >= 0: regions.append((k, p + n))
+    for m in re.finditer(re.escape(NEEDLE), d):   # a container of its own, in a file that is no shader file (main, a GSC)
+        h = m.start()
+        if any(a <= h < b for a, b in regions) or h + 12 > len(d): continue
+        size = struct.unpack_from('>I', d, h + 8)[0]
+        if size < NEEDLE_DESC + 0x760 or size > len(d) - h: continue   # a literal magic string in executable code is not a container
+        regions.append((h, h + size))
+    for h, end in regions: sections(h, end)
+    if problems and not out: red(problems[0])   # nothing in this file: it is one of the files the build says it could not read
+    if problems: print(f'[shaders] {label}: {len(problems)} of {len(problems) + len(out)} NVN sections could not be read, the rest are in ({problems[0]})', file=sys.stderr)
+    return out
+
 def rel_targets(img):
     """A module image's relative relocations: {slot: target}, both module offsets. RELA's R_AARCH64_RELATIVE entries (type 0x403) carry the target as their addend; DT_RELR (SDK 20, tag 36,
     size tag 35) packs slots whose own 8 bytes are the target: an even entry is a slot (the next slot follows it), an odd one a bitmap of the 63 slots after the last (as loader.c relr_apply)"""
@@ -1549,6 +1633,7 @@ def scan_blob(d, label, out):
         size = struct.unpack_from('<I', d, m.start() + 0x1c)[0]
         if m.start() + size <= len(d) and d[m.start() + 0x60:m.start() + 0x64] == b'grsc': out.extend(bnsh_shaders(d, m.start(), label))
     if has(d, MGFX): out.extend(mgfx_shaders(d, label))
+    if has(d, NEEDLE): out.extend(needle_shaders(d, label))
     if has(d, b'SLCT'): out.extend(slct_loose(d, label))   # Monolith SLCTs outside an HCPS (Xenoblade Chronicles 3's main)
 
 def group(label):
@@ -1562,7 +1647,7 @@ def ps_inputs(code):
     """Generic attributes a pixel shader reads: SPH words 6–13 are the input map, 8 bits for each of the 32 attributes (Ryujinx ShaderHeader.ImapTypes), non-zero = read; the translated MSL inputs are exactly user(locn<attribute>)"""
     return {i for i in range(32) if struct.unpack_from('<I', code, 0x30 + 4 * (6 + (i >> 2)))[0] >> ((i & 3) * 8) & 0xff}
 
-SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
+SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#NEEDLE@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
 # MonoGame's effects, whose passes may name no vertex shader and keep the one bound (Celeste: 10 of its 13 effects draw through SpriteBatch's vertex shader, which is in main); Next Level Games'
 # archives (Luigi's Mansion 3 makes 5,317 programs of one stage each at boot); PlatinumGames' shader objects (Bayonetta 3: one stage each, pg_shader); and control sections loose in main
 # (Advance Wars 1+2: Re-Boot Camp's Bink shaders, raw_shaders), which no file pairs

@@ -585,7 +585,9 @@ class Port:
         pdir = self.work / 'profile'; d = pdir / tid
         if g is None:
             if (d / 'game.tsv').is_file():
-                nsp.require_64bit(self.o.folder / f'{tid}_survey/extract/ExeFS', f'{tid}')   # a provisional profile an older porter wrote for a 32-bit game (issue #161)
+                survey = self.work / f'{tid}_survey'
+                if not survey.is_dir(): survey = self.o.folder / f'{tid}_survey'   # legacy desktop layout
+                nsp.require_64bit(survey / 'extract/ExeFS', f'{tid}')   # reject old provisional profiles of 32-bit games (issue #161)
                 say(f'no game profile for {tid}: reusing the provisional profile from the last run ({d}; delete it to survey again)')
             else:
                 ups = [p for _, p in sorted(self.fam['updates'], key=lambda u: u[0] or 0)[-1:]]   # the survey reads the base game and the newest update

@@ -43,7 +43,7 @@ object LogBundle {
 
     /** The bundle itself: the device's facts as text (the app's own context gives them) */
     fun build(device: String, version: String, work: File, buildLogs: List<Pair<String, File>>, out: File, tag: String = "", portStatus: File? = null): File? {
-        val stages = stageLogs(work)
+        val stages = stageLogs(work) + surveyReports(work)
         val main = AppLog.logFile()?.takeIf { it.isFile && it.length() > 0 }   // an empty log is no log
         if (stages.isEmpty() && buildLogs.isEmpty() && main == null) return null
         out.mkdirs()
@@ -213,6 +213,27 @@ object LogBundle {
             if (!logs.isDirectory) continue
             val files = logs.listFiles()?.filter { it.isFile && it.length() > 0 }?.sortedBy { it.name } ?: continue
             for (f in files) out.add("stage-logs/${folder.name}/${f.name}" to f)
+        }
+        return out
+    }
+
+    /** Only survey metadata, never extracted modules, game assets or keys. Android keeps these
+     * reports in private storage; sharing the log must not require a file manager to reach them.
+     * Current builds nest the survey inside <title>_build; older builds put it beside that folder.
+     */
+    private fun surveyReports(work: File): List<Pair<String, File>> {
+        val out = mutableListOf<Pair<String, File>>()
+        for (folder in work.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name } ?: emptyList()) {
+            val surveys = if (folder.name.endsWith("_survey")) listOf(folder) else
+                folder.listFiles()?.filter { it.isDirectory && it.name.endsWith("_survey") }?.sortedBy { it.name } ?: emptyList()
+            for (survey in surveys) {
+                for (name in listOf("survey.md", "extract/romfs_manifest.tsv")) {
+                    val file = File(survey, name)
+                    if (file.isFile && file.length() > 0) {
+                        out.add("surveys/${survey.relativeTo(work).invariantSeparatorsPath}/$name" to file)
+                    }
+                }
+            }
         }
         return out
     }

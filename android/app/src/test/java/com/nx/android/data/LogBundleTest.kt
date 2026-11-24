@@ -60,6 +60,29 @@ class LogBundleTest {
     }
 
     @Test
+    fun surveysAreSharedWithoutExtractedGameData() {
+        val work = tmp("work")
+        AppLog.init(tmpFile("log.txt", ""))
+        val nested = "01004AD014BF0000_build/01004AD014BF0000_survey"
+        val legacy = "010040E0116B8000_survey"
+        for (path in listOf(nested, legacy)) {
+            for ((name, text) in listOf("survey.md" to "# Survey\nheader magic\n",
+                "extract/romfs_manifest.tsv" to "path\tsize\n",
+                "extract/ExeFS/main" to "game code", "extract/keys.dat" to "secret")) {
+                File(work, "$path/$name").apply { parentFile!!.mkdirs(); writeText(text) }
+            }
+        }
+        val zip = LogBundle.build("device\n", "test", work, emptyList(), tmp("out"))
+        assertNotNull("survey reports alone are shareable", zip)
+        ZipFile(zip!!).use { z ->
+            val names = z.entries().toList().map { it.name }.filter { it.startsWith("surveys/") }.toSet()
+            assertEquals(setOf("surveys/$nested/survey.md", "surveys/$nested/extract/romfs_manifest.tsv",
+                "surveys/$legacy/survey.md", "surveys/$legacy/extract/romfs_manifest.tsv"), names)
+            assertTrue(z.getInputStream(z.getEntry("surveys/$nested/survey.md")).reader().readText().contains("header magic"))
+        }
+    }
+
+    @Test
     fun theBuildHistorysLogsGoUnderBuilds() {
         val work = tmp("work")
         val out = tmp("out")
