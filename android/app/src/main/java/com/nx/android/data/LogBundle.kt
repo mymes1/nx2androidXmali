@@ -125,6 +125,18 @@ object LogBundle {
             val m = ActivityManager.MemoryInfo()
             am.getMemoryInfo(m)
             row("ram", "${m.totalMem / (1L shl 20)} MB total, ${m.availMem / (1L shl 20)} MB available")
+            if (Build.VERSION.SDK_INT >= 30) {
+                // SIGKILL / Android's low-memory killer cannot write a native backtrace.
+                // Include the system's evidence in runtime bundles, not just the build log.
+                runCatching {
+                    am.getHistoricalProcessExitReasons(context.packageName, 0, 16)
+                        .filter { it.processName.endsWith(Player.PROCESS_SUFFIX) }.take(3)
+                        .forEach {
+                            row("player exit", "time=${it.timestamp} reason=${it.reason} status=${it.status} " +
+                                "pss=${it.pss} KB rss=${it.rss} KB description=${it.description.orEmpty()}")
+                        }
+                }
+            }
         }
         val dm = context.resources.displayMetrics
         row("screen", "${dm.widthPixels}x${dm.heightPixels} @${dm.densityDpi}dpi")

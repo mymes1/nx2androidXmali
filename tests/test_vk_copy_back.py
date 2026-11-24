@@ -13,11 +13,43 @@ import csrc  # noqa: E402
 
 class CopyBack(unittest.TestCase):
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
+    def test_cached_cpu_lookup_then_gpu_use(self):
+        core = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
+        function = csrc.function(core, 'vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {')
+        harness = r'''
+#include <assert.h>
+#include <stdint.h>
+typedef struct { uint64_t lo, hi; int used; } vkpool_t;
+static vkpool_t pool = {4096, 8192, 0};
+static uint64_t g_used_bytes;
+static int notes;
+static vkpool_t *pool_find(uint64_t addr, uint64_t len, int back) {
+    (void)back; return addr >= pool.lo && addr + len <= pool.hi ? &pool : 0;
+}
+static void vk_ahb_note_use(vkpool_t *p) { assert(p == &pool); notes++; }
+FUNCTION
+int main(void) {
+    // Model the cache populated by mtl_addr: only the wrapper can mark GPU use.
+    assert(pool_find(4096, 1, 0) == &pool && !pool.used);
+    assert(vk_pool_of(4096, 1) == &pool && pool.used && g_used_bytes == 4096 && notes == 1);
+    assert(vk_pool_of(4096, 1) == &pool && g_used_bytes == 4096 && notes == 2);
+    assert(!vk_pool_of(0, 1) && g_used_bytes == 4096 && notes == 2);
+}
+'''.replace('FUNCTION', function)
+        with tempfile.TemporaryDirectory(prefix='nx2a-first-use-') as tmp:
+            c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
+            c.write_text(harness)
+            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)], check=True)
+            subprocess.run([str(exe)], check=True, timeout=15)
+
+    @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
     def test_readback_dependency(self):
         ndk, _ = find_ndk()
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
-            self.skipTest('NDK Vulkan headers are required')
+            headers = Path(__file__).resolve().parents[1] / 'nxnative/dm/third_party/vulkan-headers/include'
+        if not (headers / 'vulkan/vulkan_core.h').is_file():
+            self.skipTest('Vulkan headers are required')
         core = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
         function = csrc.function(core, 'static void pools_readback_barrier(VkCommandBuffer cb) {')
         harness = r'''
@@ -99,7 +131,7 @@ static int checked_mprotect(void *a, size_t n, int prot) {
 }
 #define mprotect checked_mprotect
 DIRTY
-typedef struct { uint64_t lo, hi, mem; uint8_t *shadow; int synced, flags, baseline_complete, noncoherent; uint8_t *baseline; uint64_t stamp, stamp0; const void *span; } vkpool_t;
+typedef struct { uint64_t lo, hi, mem; uint8_t *shadow; int synced, flags, baseline_complete, noncoherent, used; uint8_t *baseline; uint64_t stamp, stamp0; const void *span; } vkpool_t;
 static vkpool_t g_pool[5]; static int g_npool = 5;
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
 struct vksub { struct { uint64_t lo, hi; } gw[2]; int ngw, readback_ranges; };
@@ -192,8 +224,20 @@ int main(int argc, char **argv) {
     if (argc > 1) {
         uint8_t *shadow = malloc(size); assert(shadow); memset(shadow, 23, size);
         uint8_t *baseline = malloc(size); assert(baseline); memset(baseline, 11, size);
-        g_npool = 1; g_pool[0] = (vkpool_t){.lo=(uintptr_t)mem, .hi=(uintptr_t)(mem + size), .shadow=shadow, .synced=1, .baseline=baseline};
+        g_npool = 1; g_pool[0] = (vkpool_t){.lo=(uintptr_t)mem, .hi=(uintptr_t)(mem + size), .shadow=shadow, .used=1, .synced=1, .baseline=baseline};
         int mode = atoi(argv[1]);
+        if (mode == 20) {
+            // An unused copied pool must not touch shadow or allocate a baseline.
+            free(baseline); g_pool[0].baseline=NULL; g_pool[0].synced=0; g_pool[0].used=0;
+            vk_pools_sync_(NULL);
+            assert(!g_pool[0].baseline && !g_pool[0].synced && !g_sync_bytes && shadow[0]==23);
+            struct vksub idle={0}; pools_copy_back(&idle); assert(!scanned && mem[0]==11);
+            // First actual GPU use uploads all current CPU bytes, not stale startup contents.
+            mem[0]=42; g_pool[0].used=1; vk_pools_sync_(NULL);
+            baseline=g_pool[0].baseline;
+            assert(baseline && g_pool[0].synced && g_sync_bytes==size && !memcmp(shadow,mem,size) && !memcmp(baseline,mem,size));
+            free(baseline); free(shadow); assert(!munmap(mem,size*5)); return 0;
+        }
         if (mode == 8) {
             // Untracked/unaligned pools, partial final blocks, overlapping ranges and untouched guard bytes.
             for (size_t round = 0; round < 200; round++) {
@@ -437,7 +481,7 @@ int main(int argc, char **argv) {
             subprocess.run(['cc', '-std=gnu11', '-pthread', '-Wall', '-Wextra', '-Werror',
                             '-Wno-misleading-indentation', str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=15)
-            for case in ('4', '5', '6', '7', '8', '9', '10', '11', '12', '15', '16', '17', '18', '19'):
+            for case in ('4', '5', '6', '7', '8', '9', '10', '11', '12', '15', '16', '17', '18', '19', '20'):
                 subprocess.run([str(exe), case], check=True, timeout=15)
             for case in ('13', '14'):
                 result = subprocess.run([str(exe), case], capture_output=True, text=True, timeout=15)

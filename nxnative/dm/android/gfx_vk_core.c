@@ -41,7 +41,8 @@ static uint64_t mem_diag_ns(void) {
     return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
 }
 static void mem_diag_zc(unsigned stage, const char *name, uint64_t size, const char *kind, int error) {
-    if (!mem_diag_on()) return;
+    // Keep the first failure at each stage even without verbose memory diagnostics:
+    // a generic -1 hides allocation, fd and mmap failures on Mali devices.
     static _Atomic unsigned seen;
     if (atomic_fetch_or(&seen, 1u << stage) & (1u << stage)) return;
     VKLOG("[memdiag] zero-copy failed at %s: %s=%d, size=%llu, page_size=%d", name, kind, error, (unsigned long long)size, getpagesize());
@@ -1038,12 +1039,20 @@ again:   // (pool_back found another pool in the entry: the one looked up was re
     if (lazy && !back) return r;   // (not kept in the cache, which holds pools with their buffer)
     if (lazy == 2) r = NULL;   // its buffer could not be made (pool_back said why), for now or for good
     else if (lazy) { int b = pool_back(r, serial); if (b > 0) goto again; if (b) r = NULL; }
-    if (r && back && !__atomic_load_n(&r->used, __ATOMIC_RELAXED) && !__atomic_exchange_n(&r->used, 1, __ATOMIC_RELAXED)) __atomic_fetch_add(&g_used_bytes, r->hi - r->lo, __ATOMIC_RELAXED);
     if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } c.p[ck] = r; memmove(&c.last[1], &c.last[0], 3 * sizeof *c.last); c.last[0] = r; }
     if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
     return r;
 }
-vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) { vkpool_t *p = pool_find(addr, len, 1); if (p) vk_ahb_note_use(p); return p; }   // (the note: a pool this submission uses, for the zero-copy cache sync)
+vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
+    vkpool_t *p = pool_find(addr, len, 1);
+    if (p) {
+        // Mark here, not on pool_find's slow path: mtl_addr can prime its cache
+        // while reading shader/command bytes on the CPU, before any GPU use.
+        if (!__atomic_load_n(&p->used, __ATOMIC_RELAXED) && !__atomic_exchange_n(&p->used, 1, __ATOMIC_RELAXED)) __atomic_fetch_add(&g_used_bytes, p->hi - p->lo, __ATOMIC_RELAXED);
+        vk_ahb_note_use(p);
+    }
+    return p;
+}
 uint32_t vk_pool_gen(void) { return __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE); }   // pools added or removed (gfx_vk_exec.c's descriptor set memo: vk_pool_of's results hold while it is unchanged)
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
     vkpool_t *p = vk_pool_of(addr, len ? len : 1);
@@ -1080,7 +1089,12 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
     enum { BLK = 64 << 10 };
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) {
-        vkpool_t *p = &g_pool[i]; if (!p->shadow) continue;
+        vkpool_t *p = &g_pool[i];
+        // CPU-only command/shader/descriptor pools need no GPU snapshot. On
+        // copied-pool devices the old first submit touched every shadow AND
+        // allocated a second, equally large baseline, even for unused pools.
+        // First GPU use still performs the full upload below (synced remains 0).
+        if (!p->shadow || !__atomic_load_n(&p->used, __ATOMIC_RELAXED)) continue;
         uint8_t *lo = (uint8_t *)(uintptr_t)p->lo; uint64_t size = p->hi - p->lo, st = nvn_dirty_now();
         if (!p->baseline) { p->baseline = malloc(size); if (!p->baseline) die("[RED] [vk] copied-pool baseline allocation failed (%llu bytes)", (unsigned long long)size);
             p->synced = 0; if (mem_diag_on()) VKLOG("[memdiag] copy-back baseline allocated: %.2f MiB", size / 1048576.0); }

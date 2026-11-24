@@ -18,7 +18,9 @@ class MemoryDiagnostics(unittest.TestCase):
         ndk, _ = find_ndk()
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
-            self.skipTest('NDK Vulkan headers are required')
+            headers = Path(__file__).resolve().parents[1] / 'nxnative/dm/third_party/vulkan-headers/include'
+        if not (headers / 'vulkan/vulkan_core.h').is_file():
+            self.skipTest('Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
         start = src.index('uint32_t vk_mem_type(')
         end = src.index('\n}\n', src.index('static void mem_diag_pool(')) + 3
@@ -66,7 +68,11 @@ int main(void) {
         ndk, _ = find_ndk()
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
-            self.skipTest('NDK Vulkan headers are required')
+            headers = Path(__file__).resolve().parents[1] / 'nxnative/dm/third_party/vulkan-headers/include'
+        if not (headers / 'vulkan/vulkan_core.h').is_file():
+            self.skipTest('Vulkan headers are required')
+        if not (headers / 'vulkan/vulkan_android.h').is_file():
+            self.skipTest('Android Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text(encoding='utf-8')
         helpers = csrc.between(src, '// DM_VK_MEM_DIAG', '\nuint32_t vk_mem_type')
         start = src.index('typedef struct { const uint64_t *r; int n; } zcin_t;')   # zc_next_in, zc_fill, zc_place, zc_anon_fill, zc_unplace, pool_zero_copy
@@ -182,7 +188,6 @@ static void vkFreeMemory(VkDevice d, VkDeviceMemory m, const void *alloc) { (voi
 HELPERS
 FUNCTION
 int main(void) {
-    int enabled = getenv("DM_VK_MEM_DIAG") && atoi(getenv("DM_VK_MEM_DIAG"));
     static const char *const names[] = {"size", "AHardwareBuffer_allocate", "socketpair", "AHardwareBuffer_sendHandleToUnixSocket", "recv_fds", "mmap-temporary", "mmap-fixed", "vkGetAndroidHardwareBufferPropertiesANDROID", "vkCreateBuffer", "vkAllocateMemory", "vkBindBufferMemory"};
     uint8_t memory[64]; memset(memory, 23, sizeof memory);
     for (failure = 0; failure <= 10; failure++) {
@@ -195,8 +200,8 @@ int main(void) {
             assert(destroyed == (failure >= 9));
             assert(freed == (failure == 10));   // bound memory that failed to bind is freed, not leaked
             assert(anon == (failure >= 7));     // an import that failed after the copy: the pages go back to anonymous memory before the buffer goes
-            assert(messages == (enabled ? failure + 1 : 0));
-            if (enabled) assert(strstr(last, names[failure]));
+            assert(messages == failure + 1);
+            assert(strstr(last, names[failure]));
         }
     }
     failure = -1; released = closed = destroyed = 0; vkpool_t p = {0};
