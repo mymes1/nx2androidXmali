@@ -26,6 +26,7 @@ static int notes;
 static vkpool_t *pool_find(uint64_t addr, uint64_t len, int back) {
     (void)back; return addr >= pool.lo && addr + len <= pool.hi ? &pool : 0;
 }
+static void copy_pool_seed(vkpool_t *p) { (void)p; }
 static void vk_ahb_note_use(vkpool_t *p) { assert(p == &pool); notes++; }
 FUNCTION
 int main(void) {

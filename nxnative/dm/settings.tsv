@@ -251,6 +251,7 @@ DM_VK_BIND_DUMP	str		debug	start	gfx_vk_exec.c	writes the storage of the texture
 DM_VK_CAPTURE	str		debug,ios	?	hle_vk.m	
 DM_VK_CB_DRAWS	int	128	profile	live	gfx_vk_exec.c	split the frame into command buffers every N draws (128), only before passes with a new depth image; `0` = never
 DM_VK_COMPUTE_WARM_MAX	int		debug	?	gfx_vk_exec.c	
+DM_VK_COPY_LAZY	bool		profile	start	gfx_vk_poolcopy.inc	Defer copied-pool GPU allocation until first GPU use; default on for Mali. 0 restores eager allocation, 1 enables on other GPUs. Guest pages are not remapped.
 DM_VK_CPU_READY	bool		debug	?	gfx_vk_exec.c	
 DM_VK_CRUMBS	bool		debug	start	gfx_vk_exec.c	for a device lost (GPU hang): each pass end and dispatch writes its number into host-visible memory after a full barrier; when the device is lost the log names the last work the GPU finished and the passes after it, with their shaders. Slows the GPU
 DM_VK_DBG_DRAW	int		debug	start	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets

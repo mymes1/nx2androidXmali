@@ -40,7 +40,11 @@ static uint64_t mem_diag_ns(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
 }
+static _Atomic int g_zc_mmap_denied;
 static void mem_diag_zc(unsigned stage, const char *name, uint64_t size, const char *kind, int error) {
+    // A process-wide permission denial is not cured by allocating another
+    // 256 MB hardware buffer. Keep the copied fallback, without repeating it.
+    if ((stage == 5 || stage == 6) && (error == EACCES || error == EPERM)) atomic_store(&g_zc_mmap_denied, 1);
     // Keep the first failure at each stage even without verbose memory diagnostics:
     // a generic -1 hides allocation, fd and mmap failures on Mali devices.
     static _Atomic unsigned seen;
@@ -844,7 +848,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     uint64_t c = whole ? size : ZC_CHUNK; int m = zc_lazy_mode();
     static uint64_t pg; if (!pg) pg = (uint64_t)getpagesize();   // (a 16 KB-page kernel: a pool only 4 KB-aligned is not swapped in place, it is copied as before)
     // (zero copy off: no lazy pools, and no uncached-read check either)
-    int lazy = !whole && !zc_off() && !((a | size) & (pg - 1)) && m && (m >= 2 || (size > c ? m == 1 : zc_uncached())) && nvn_dirty_tracked(mem, size);
+    int lazy = !whole && !atomic_load(&g_zc_mmap_denied) && !zc_off() && !((a | size) & (pg - 1)) && m && (m >= 2 || (size > c ? m == 1 : zc_uncached())) && nvn_dirty_tracked(mem, size);
     for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size, lazy);
     if (size > c) VKLOG("memory pool %p +%#llx: %llu chunks of at most %#llx", mem, (unsigned long long)size, (unsigned long long)((size + c - 1) / c), c);
 }
@@ -877,7 +881,9 @@ static void pool_note(int kind, uint64_t bytes, uint64_t ns) {   // kind 0: made
 // into it and the driver's import take milliseconds each, and every lookup waits on the lock (vk_pool_of: each buffer binding of each draw on the replay thread, and the
 // game threads' mtl_addr, once a pool was added or removed). Pokémon Scarlet makes and drops pools on three threads at once while a thrown ball flies (its capture assets,
 // ~180 MB read in 1.5 s): the replay thread stood almost still for a second with the GPU idle (simpleperf), in frames of 100-580 ms
+static int g_shadow_pools;
 static pthread_mutex_t g_lazy_mu = PTHREAD_MUTEX_INITIALIZER;   // one pool backed at a time (pool_back); mtl_pool_del takes it first, so no entry moves while one is backed
+#include "gfx_vk_poolcopy.inc"
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int lazy) {
     uint64_t t0 = pool_ns();
     vkpool_t q, *p = &q; memset(p, 0, sizeof *p);
@@ -897,17 +903,11 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     for (int j = 0; j < g_npool && !inner; j++) inner = g_pool[j].zero_copy && g_pool[j].base != base && g_pool[j].lo < p->hi && g_pool[j].hi > p->lo;
     pthread_rwlock_unlock(&g_pool_mu);
     if (!inner) pthread_mutex_unlock(&g_nest_mu);
-    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : zc_off() ? -4 : zc_over(end - base) ? -5 : lazy ? (p->lazy = 1, 0) : pool_zero_copy(p, (uint8_t *)mem, size, 0, NULL);
+    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : zc_off() ? -4 : zc_over(end - base) ? -5 : atomic_load(&g_zc_mmap_denied) ? -6 : lazy ? (p->lazy = 1, 0) : pool_zero_copy(p, (uint8_t *)mem, size, 0, NULL);
     if (zc) {
         static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
-        const char *e = getenv("DM_VK_POOL_CACHED"); int cached = e && atoi(e);
-        VkResult r = VK_ERROR_FEATURE_NOT_PRESENT;
-        if (cached && vkFlushMappedMemoryRanges && vkInvalidateMappedMemoryRanges) r = pool_copied_alloc(p, size, 1);
-        if (r == VK_ERROR_DEVICE_LOST) VKCHK(r);
-        if (r) {
-            if (cached && mem_diag_on()) VKLOG("[memdiag] cached pool unavailable (%d), using coherent memory", r);
-            VKCHK(pool_copied_alloc(p, size, 0));
-        }
+        if (copy_lazy_on()) p->lazy = 3;
+        else copy_pool_alloc(p, size);
     }
     pthread_rwlock_wrlock(&g_pool_mu);
     if (g_npool == MAXPOOL) { pthread_rwlock_unlock(&g_pool_mu); die("[vk] too many memory pools"); }
@@ -918,8 +918,8 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     if (inner) pthread_mutex_unlock(&g_nest_mu);
     if (near & 2) pthread_mutex_unlock(&g_lazy_mu);
     if (np >= 1024 && !(np & (np - 1))) VKLOG("%d memory pools live", np);
-    __atomic_fetch_add(zc ? &g_cp_bytes : lazy ? &g_lazy_total : &g_zc_bytes, size, __ATOMIC_RELAXED);
-    static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, lazy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : lazy ? "zero-copy when the GPU first uses it" : "zero-copy",
+    if (p->lazy != 3) __atomic_fetch_add(zc ? &g_cp_bytes : lazy ? &g_lazy_total : &g_zc_bytes, size, __ATOMIC_RELAXED);
+    static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, lazy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, p->lazy == 3 ? "copied when the GPU first uses it" : zc ? "copied" : lazy ? "zero-copy when the GPU first uses it" : "zero-copy",
                                         g_zc_bytes / 1048576.0, g_lazy_total / 1048576.0, g_cp_bytes / 1048576.0);
     pool_note(0, size, pool_ns() - t0);
 }
@@ -1038,7 +1038,7 @@ again:   // (pool_back found another pool in the entry: the one looked up was re
     pthread_rwlock_unlock(&g_pool_mu);
     if (lazy && !back) return r;   // (not kept in the cache, which holds pools with their buffer)
     if (lazy == 2) r = NULL;   // its buffer could not be made (pool_back said why), for now or for good
-    else if (lazy) { int b = pool_back(r, serial); if (b > 0) goto again; if (b) r = NULL; }
+    else if (lazy) { int b = lazy == 3 ? copy_pool_back(r, serial) : pool_back(r, serial); if (b > 0) goto again; if (b) r = NULL; }
     if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } c.p[ck] = r; memmove(&c.last[1], &c.last[0], 3 * sizeof *c.last); c.last[0] = r; }
     if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
     return r;
@@ -1046,6 +1046,7 @@ again:   // (pool_back found another pool in the entry: the one looked up was re
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
     vkpool_t *p = pool_find(addr, len, 1);
     if (p) {
+        copy_pool_seed(p);   // a copied pool first bound after the submission began
         // Mark here, not on pool_find's slow path: mtl_addr can prime its cache
         // while reading shader/command bytes on the CPU, before any GPU use.
         if (!__atomic_load_n(&p->used, __ATOMIC_RELAXED) && !__atomic_exchange_n(&p->used, 1, __ATOMIC_RELAXED)) __atomic_fetch_add(&g_used_bytes, p->hi - p->lo, __ATOMIC_RELAXED);
@@ -1480,7 +1481,6 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
 // ---------------- submissions: begin, CPU-visible effects, commit ----------------
 static void post(post_op o) { vksub_t *s = cur(); if (s->npost == s->cappost) { s->cappost = s->cappost ? 2 * s->cappost : 64; s->post = realloc(s->post, s->cappost * sizeof *s->post); } s->post[s->npost++] = o; }
 void mtl_init(void) { vk_init(); }
-static int g_shadow_pools;
 static void pools_readback_barrier(VkCommandBuffer cb) {
     if (!g_shadow_pools) return;
     // The last part can be dropped after earlier ones were sent; each part must publish its writes for the CPU merge.

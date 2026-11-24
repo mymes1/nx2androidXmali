@@ -106,3 +106,38 @@ and pool-sync run has 28 passing tests and one optional game-SPIR-V corpus test
 skipped (no game data). No Frontiers/Mali device run is available here: this
 addresses the reference branch's material-flag rounding issue, not every
 possible black-object/glitch cause, and does not establish successful startup.
+
+## Confirmed low-memory exits on the 4 GB Tab A9
+
+`Sonic_Frontiers-log.zip` supplied in the branch records two player exits with
+Android reason 3 (`ApplicationExitInfo.REASON_LOW_MEMORY`), on an SM-X110 with
+3740 MB usable RAM. Both runs report `mmap-temporary: errno=13` (EACCES).
+The latest ends while registering the large copied pools; the previous gets
+as far as loading the 2308-shader bundle and creating render targets. This is
+now evidence of Android low-memory termination, not a shader compilation
+crash or a missing shader bundle.
+
+The earlier unused-pool snapshot optimization did not defer the initial Vulkan
+allocations. `gfx_vk_poolcopy.inc` now defers copied-pool backing on Mali until
+`vk_pool_of` first needs the GPU buffer (`lazy=3`). CPU address lookups leave
+it unbacked. First use allocates and fully uploads it, creates its merge baseline,
+flushes non-coherent memory and enables submission readback; existing cached
+and coherent allocation fallback rules remain. This also fixes eager copied
+pools first bound after begin_segment's initial upload scan: they must be
+seeded before that submission can use them. Pending pools can be removed
+without allocating anything. `DM_VK_COPY_LAZY=0` restores eager allocation;
+`=1` enables deferral on other vendors.
+
+After an mmap EACCES/EPERM, later registrations use the copied path without
+repeatedly allocating hardware buffers to try the same denied mapping. Other
+errors (including allocation failures) do not globally disable zero-copy.
+No permission checks are bypassed, guest pages remapped, or heap sizes guessed
+smaller. Deferral reduces duplicated allocations for pools/chunks the GPU does
+not use; a 256 MB chunk actually used still costs a 256 MB GPU allocation and
+baseline. This does not guarantee Frontiers will fit within this tablet's RAM.
+
+Regression harnesses compile the real registration and copied-backing helpers,
+check no allocations at deferred registration, current guest bytes uploaded
+at first use, cache flush and baseline publication, no duplicate allocation,
+stale identity rejection, late eager first use, cached-to-coherent fallback,
+and vendor/override policy. A separate harness checks permission-denial memory.
