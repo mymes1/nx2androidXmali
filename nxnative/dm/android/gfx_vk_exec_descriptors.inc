@@ -45,8 +45,8 @@ static void shader_cpu_ready(const vkshader_t *s, int stage) {
 }
 static void graphics_cpu_ready(void) { for (int st = 0; st < 3; st++) shader_cpu_ready(S.sh[st], st); }
 static uint32_t ubo_word(int st, int reg, int off) {
-    const p_bind_buf *u = reg >= 0 && reg < 16 ? &S.ubo[st][reg] : NULL; uint32_t v = 0;
-    if (u && u->addr && off >= 0 && (uint64_t)off + 4 <= (u->size ? u->size : 4) && vk_pool_of(u->addr + off, 4)) vk_ubd_read(u->addr + off, 4, (uint8_t *)&v);   // with the deferred updates
+    const p_bind_buf *u = st >= 0 && st < 6 && reg >= 0 && reg < 16 ? &S.ubo[st][reg] : NULL; uint32_t v = 0;
+    if (u && u->addr && off >= 0 && (uint64_t)off + 4 <= (u->size ? u->size : 4) && u->addr <= UINT64_MAX - (uint64_t)off - 4 && mtl_addr(u->addr + off, 4, NULL, NULL)) vk_ubd_read(u->addr + off, 4, (uint8_t *)&v);   // with the deferred updates
     return v;
 }
 // The texture and sampler pools the replayed command buffer last bound, as bases in the host's tables (hle_nvn.c dpool_base; 0 for the first pool of each kind). Handles that bind
@@ -253,8 +253,19 @@ static void vk_cross(int k, uint64_t a, uint64_t n, const vkpool_t *p) {
 }
 // a constant buffer binding's descriptor (stage_set, set_memo_get): its pool's buffer from the alignment boundary below it, or the shadow of the deferred updates over it
 static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescriptorBufferInfo *bi) {
-    const p_bind_buf *u = b->reg >= 0 && b->reg < 16 ? &S.ubo[st][b->reg] : NULL;
+    const p_bind_buf *u = st >= 0 && st < 6 && b->reg >= 0 && b->reg < 16 ? &S.ubo[st][b->reg] : NULL;
     uint64_t n = u && u->size ? (u->size > 65536 ? 65536 : u->size) : 65536; VkBuffer buf; VkDeviceSize off;
+    // As in the reference renderer's arena path, read-only constants need a
+    // resource-sized copy, not a whole copied pool plus a merge baseline.
+    // Only never-backed chunks qualify; all backed pools and pending GPU
+    // producers must stay on their shared buffer: CPU bytes may
+    // still precede their writes. Deferred uniform updates are overlaid below.
+    if (g_var_now != 9 && u && u->addr && vk_pool_copied_range(u->addr, n) && !vk_gpu_pending(u->addr, n)) {
+        uint8_t *d = vk_scratch(n, V.props.limits.minUniformBufferOffsetAlignment, &buf, &off);
+        vk_ubd_read(u->addr, n, d);
+        ubo_log(s, st, b->reg, u->addr, n);
+        *bi = (VkDescriptorBufferInfo){buf, off, n}; return;
+    }
     vkpool_t *p = g_var_now != 9 && u && u->addr ? vk_pool_of(u->addr, 1) : NULL;
     if (!p) { *bi = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536}; return; }
     buf = p->buf; off = u->addr - p->lo;

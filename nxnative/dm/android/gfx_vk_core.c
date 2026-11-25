@@ -1060,10 +1060,22 @@ int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
     if (!p) return 0;
     *buf = p->buf; *off = addr - p->lo + p->boff; return 1;
 }
+// Metadata only: do not back a deferred pool for a CPU-side range copy.
+int vk_pool_copied_range(uint64_t addr, uint64_t len) {
+    if (!len || addr > UINT64_MAX - len) return 0;
+    vkpool_t *p = pool_find(addr, 1, 0);
+    // Only a never-backed chunk is proven free of GPU stores from every
+    // shader stage. A backed pool can contain writes not in g_gw (graphics
+    // completion coverage is intentionally separate from CPU dependencies).
+    // Never CPU-snapshot those bytes, or cross into another chunk's state.
+    return p && !p->zero_copy && !p->shadow && p->lazy == 3 && addr + len <= p->hi;
+}
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     vkpool_t *p = pool_find(addr, len ? len : 1, 0);
     if (!p) return 0;
-    if (buf) *buf = (void *)(uintptr_t)p->lo; if (off) *off = addr - p->lo; return 1;
+    if (buf) *buf = (void *)(uintptr_t)p->lo;
+    if (off) *off = addr - p->lo;
+    return 1;
 }
 void mtl_alias_drop_pool(const void *pool) { void vk_tex_drop_pool(const void *); vk_tex_drop_pool(pool); }
 // The NVN flags of the pool at mem (hle_nvn.c, after mtl_pool_add): a copied pool the CPU maps uncached (CPU_UNCACHED, 0x2) is one the game writes and the GPU reads;

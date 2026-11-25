@@ -203,3 +203,54 @@ black-material fix is unchanged. This is a targeted reduction of excess work,
 not a port of the reference's arena architecture; shared-pool serialization,
 unknown-writer fallback and GPU cost remain. Without fresh device logs or
 profiling, the precise bottleneck and normal-speed gameplay are not verified.
+
+## CPU descriptors must not back copied pools
+
+A further comparison with the reference branch's `gfx_vk_draw.inc` and
+`gfx_vk_sbcopy.inc` found an accidental whole-pool allocation path here:
+`ubo_word` called `vk_pool_of` to validate a four-byte CPU read. That GPU
+lookup seeds deferred copied pools. It now uses `mtl_addr`, which checks CPU
+coverage without backing or marking the pool GPU-used.
+
+For never-backed copied chunks, ordinary constant buffers now take resource-sized copies in
+the existing submission scratch arena (up to 64 KiB), like the reference's
+range-copy design, instead of backing a whole chunk and allocating its merge
+baseline just to bind constants. A metadata-only lookup determines eligibility.
+Deferred uniform updates are still applied by `vk_ubd_read`. A backed chunk, a cross-chunk range or a range with a
+pending GPU producer stays on the original shared-buffer path; zero-copy pools,
+invalid ranges and the existing diagnostic override retain their old behavior.
+Scratch memory is recycled by the existing submission fence lifecycle. This
+is not a replacement of the full renderer with the reference's arena/cache.
+
+The production-descriptor harness verifies no GPU lookup for CPU descriptor
+words, bounded constant allocation, deferred-update overlay, the 64 KiB limit,
+GPU-producer fallback, zero-copy fallback and unbound descriptors. The delayed
+compute harness still verifies indirect GPU arguments and slot lifecycle. No
+Frontiers/device run is available to establish peak-RAM reduction or normal
+speed. This change preserves the existing UNORM rounding fix; missing shader
+captures still need translation in a subsequent port.
+
+
+### Pre-build audit of bounded constant copies
+
+The fast path is deliberately restricted to `lazy=3`, no shadow and no
+zero-copy mapping, with the complete constant range in that chunk. Checking
+only the CPU-read dependency history was insufficient proof for an already
+backed pool: graphics completion coverage is tracked separately. The audit
+added this stronger eligibility rule and production-helper tests for backed,
+zero-copy, unbound, cross-chunk, zero-size and overflowing ranges. Descriptor
+word reads now reject invalid stages and wrapping addresses before reading
+memory. Constant descriptor lookup likewise validates the stage index.
+
+Validation in the sandbox: the broad unittest discovery after installing Python
+dependencies ran 567 tests with 19 errors and 24 skips. All 19 errors were
+local toolchain limitations: 13 Python 3.11 nested-f-string syntax errors, two
+missing newer tarfile filter arguments, and four missing `javac` errors. This
+is not a full-suite pass. CI uses Python 3.14 and provides the Android/Java
+build toolchains. No device performance or memory-safety guarantee follows
+from these host tests; the low-memory exit remains the device acceptance test.
+
+Final targeted audit run: all 67 `test_vk*.py` tests completed successfully
+(63 passed, four optional/environment skips), the CPU-handle readiness test
+passed, and the combined RNE/storage-reflection/constant-range run completed
+18 tests (16 passed, two optional skips). `git diff --check` passed.

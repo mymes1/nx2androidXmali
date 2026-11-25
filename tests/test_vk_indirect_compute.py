@@ -46,6 +46,7 @@ def production():
     infl = core[core.index('typedef struct { uint64_t lo, hi, fence; const uint8_t *data; uint8_t *own; }'):core.index('int vk_ubd_overlaps')]
     functions = ''.join(function(core, sig) for sig in [
         'static vkpool_t *pool_find(', 'vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'int vk_buf_at(',
+        'int vk_pool_copied_range(', 'int mtl_addr(',
         'static vksub_t *cur(', 'void *vk_scratch(', 'void vk_img_barrier_all('])
     # Single-line production functions need their line, not the next function.
     for sig in ['uint32_t vk_pool_gen(', 'static vksub_t *cur(']:

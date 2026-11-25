@@ -44,6 +44,7 @@ int vk_readback_ranges(void) { return 0; }
 void vk_readback_unknown(void) { abort(); }
 void vk_readback_wrote(uint64_t a, uint64_t n) {}
 void vk_gpu_wrote(uint64_t a, uint64_t n) {}
+int vk_gpu_pending(uint64_t a, uint64_t n) { return 1; }
 static void sub_gpu_wrote(uint64_t a, uint64_t n) {}
 uint64_t vk_fence_done(void) { return 0; }
 static uint64_t mem_handle(uint64_t h) { abort(); }
