@@ -123,6 +123,22 @@ int main(int argc,char **argv) {
  copy_pool_seed(&eager);assert(eager.synced && flushes==2 && !memcmp(eager.shadow,guest,64));
  copy_pool_seed(&eager);assert(flushes==2); // never overwrite a live GPU copy
  free(eager.shadow);free(eager.baseline);
+ // Cached policy: Mali defaults on, other vendors off; explicit values win.
+ cached_fail=0;
+ for(int vendor=0;vendor<2;vendor++) {
+   V.props.vendorID=vendor ? 0x13b5 : 0x5143;
+   for(int setting=-1;setting<=1;setting++) {
+     if(setting<0) unsetenv("DM_VK_POOL_CACHED");
+     else setenv("DM_VK_POOL_CACHED",setting ? "1" : "0",1);
+     eager=(vkpool_t){0}; int before=allocs;
+     copy_pool_alloc(&eager,64);
+     assert(allocs==before+1 && eager.noncoherent==(setting<0 ? vendor : setting));
+     free(eager.shadow);
+   }
+ }
+ // Missing cache-management entry points must still use coherent memory.
+ vkFlushMappedMemoryRanges=NULL;
+ eager=(vkpool_t){0};copy_pool_alloc(&eager,64);assert(!eager.noncoherent);free(eager.shadow);
 }
 '''.replace('REGISTRATION', registration)
         with tempfile.TemporaryDirectory(prefix='nx2a-copy-lazy-') as tmp:

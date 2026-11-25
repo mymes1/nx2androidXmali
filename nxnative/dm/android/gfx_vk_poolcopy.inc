@@ -6,7 +6,12 @@ static int copy_lazy_on(void) {
     return on;
 }
 static void copy_pool_alloc(vkpool_t *p, uint64_t size) {
-    const char *e = getenv("DM_VK_POOL_CACHED"); int cached = e && atoi(e);
+    // The copy-back merge reads this mapping on the CPU every submission.
+    // HOST_COHERENT alone can select uncached Mali memory: GiB-scale scans
+    // then run at device-memory read speed. Prefer cached RAM on Mali, keeping
+    // the explicit flush/invalidate path and the coherent fallback below.
+    const char *e = getenv("DM_VK_POOL_CACHED");
+    int cached = e ? atoi(e) != 0 : V.props.vendorID == 0x13b5;
     VkResult r = VK_ERROR_FEATURE_NOT_PRESENT;
     if (cached && vkFlushMappedMemoryRanges && vkInvalidateMappedMemoryRanges) r = pool_copied_alloc(p, size, 1);
     if (r == VK_ERROR_DEVICE_LOST) VKCHK(r);

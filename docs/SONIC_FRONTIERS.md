@@ -141,3 +141,25 @@ check no allocations at deferred registration, current guest bytes uploaded
 at first use, cache flush and baseline publication, no duplicate allocation,
 stale identity rejection, late eager first use, cached-to-coherent fallback,
 and vendor/override policy. A separate harness checks permission-denial memory.
+
+
+## Copied-pool CPU read performance on Mali
+
+Copied pools now prefer HOST_CACHED memory on Mali. The previous coherent-only
+allocation policy did not require CPU caching, although submission readback
+scans the mapped GPU copy against its baseline. Large pools in uncached memory
+can therefore impose substantial CPU read costs. This is a performance fix
+candidate for the reported very slow gameplay, not a measured device speedup.
+
+Non-coherent cached allocations retain the existing atom-aligned upload flushes
+and post-fence readback invalidations. Allocation failures or unavailable cache
+operations retain the coherent fallback; device loss remains fatal. Other GPU
+vendors keep their existing default. `DM_VK_POOL_CACHED=0` restores the old Mali
+allocation policy and `=1` explicitly requests cached memory on any vendor.
+The deferred-backing memory fix remains enabled; no synchronization is skipped
+and no additional whole-pool buffers are introduced.
+
+The production-helper regression covers both vendor defaults, explicit on/off,
+missing cache operations and allocation fallback. Device profiling and another
+Frontiers run are still needed to establish how much this improves frame time;
+memory pressure and GPU workload can independently limit this 4 GB tablet.
