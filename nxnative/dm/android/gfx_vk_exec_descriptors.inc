@@ -308,11 +308,14 @@ static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
 // dofs (at least s->ndyn entries): the dynamic offsets of the set's dynamic uniform buffers, in binding order as vkCmdBindDescriptorSets takes them
 // indirect_c0 (compute only): a fresh segment for this dispatch's GPU-written counts; never put mutable bytes in drv_shared's content cache.
 static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescriptorBufferInfo *indirect_c0) {
-    // Check before descriptor memo hits: storage/unknown descriptors can write beyond tracked transfer ranges.
+    // Check before descriptor memo hits. Bounded storage buffers are noted when
+    // the set is built (once per submission even with memo hits); other
+    // storage/unknown descriptors still require conservative whole-pool merges.
     if (vk_readback_ranges()) for (int i = 0; i < s->nbind; i++) {
         int d = s->b[i].desc;
         int k = s->b[i].kind;
-        if (k == RK_SBUF || k == RK_SBUF_UBO || k == RK_IMG || k == RK_IMG_UBO || k == RK_IMG_TBUF) { vk_readback_unknown(); break; }
+        if ((k == RK_SBUF || k == RK_SBUF_UBO || k == RK_UBO_PTR) && d == RD_SSBO) continue;
+        if (k == RK_IMG || k == RK_IMG_UBO || k == RK_IMG_TBUF) { vk_readback_unknown(); break; }
         if (d != RD_UBO && d != RD_SAMPLED && d != RD_TBUF && d != RD_IMAGE && d != RD_SAMPLER) { vk_readback_unknown(); break; }
     }
     int memo = st < 3 && !g_x_nosetmemo && !g_tracing && !g_var_now && !g_x_nosetc && !g_x_nodrvc && !g_ubolog_key && g_td_off < 0 && set_memo_ok(s), verify = 0;
@@ -355,7 +358,10 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
                 // bound from the 256-byte boundary below it, the boundary the translator offsets every access from (shader_vk.py SB_ALIGN; a multiple of any device's minimum alignment)
                 const VkDeviceSize al = SB_ALIGN; if (V.props.limits.minStorageBufferOffsetAlignment > al) VKRED_ONCE(41, "storage buffer alignment %llu above %llu", (unsigned long long)V.props.limits.minStorageBufferOffsetAlignment, (unsigned long long)al);
                 bi[nw] = (VkDescriptorBufferInfo){buf, p->boff + off - off % al, n + off % al};
-                if (st == 5 && b->kind != RK_UBO_PTR) { void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(a, n); }   // a dispatch's storage buffers: taken as written
+                // Completion coverage is conservative: a read-only SSBO may be
+                // included. Do not turn that overestimate into a CPU-read wait.
+                if (b->desc == RD_SSBO) vk_readback_wrote(a - off % al, n + off % al);
+                if (st == 5 && b->kind != RK_UBO_PTR) { void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(a, n); }   // retain the existing compute readiness dependency
             } else bi[nw] = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536};
             break; }
         case RK_TEX: case RK_TEX_UBO: case RK_TEX_C2A: {

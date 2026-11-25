@@ -80,6 +80,7 @@ void vk_pools_sync(VkCommandBuffer cb);
 typedef struct vksub vksub_t;
 VkCommandBuffer vk_cmd(void);          // the current submission's main command buffer (recording)
 int vk_readback_ranges(void);
+void vk_readback_wrote(uint64_t a, uint64_t n);   // conservative descriptor extent, completion coverage only (not a new CPU-read dependency)
 void vk_readback_unknown(void);   // force full cached-pool merge for this submission
 int vk_sub_open(void);                 // a submission is being recorded
 VkCommandBuffer vk_upload_cmd(void);   // the current submission's upload command buffer (runs before the main one)

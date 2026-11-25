@@ -1495,7 +1495,7 @@ static void begin_segment(int continuing) {
     static int next; g_cur = next; next = (next + 1) % NSLOT; vksub_t *s = &g_slot[g_cur];
     slot_recycle(s);
     s->npost = 0; s->up_used = 0; s->ngw = 0;
-    { const char *e = getenv("DM_VK_POOL_READBACK_RANGES"); s->readback_ranges = e && atoi(e); }
+    { const char *e = getenv("DM_VK_POOL_READBACK_RANGES"); s->readback_ranges = e ? atoi(e) != 0 : V.props.vendorID == 0x13b5; }
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     s->main = s->mains[0]; s->nmain_used = 1; s->cb_err = 0; s->up = s->ups[0]; s->nup_used = 1; s->nmain_sent = 0;
     VKCHK(vkBeginCommandBuffer(s->main, &bi)); g_cmd_gen++;
@@ -1640,6 +1640,9 @@ static void sub_gpu_wrote(uint64_t a, uint64_t n) {   // into the open submissio
     for (int k = 0; k < s->ngw; k++) { uint64_t d = lo > s->gw[k].hi ? lo - s->gw[k].hi : s->gw[k].lo > hi ? s->gw[k].lo - hi : 0; if (d < bd) { bd = d; best = k; } }
     if (best >= 0 && (bd <= 65536 || s->ngw == GW_SUB)) { if (lo < s->gw[best].lo) s->gw[best].lo = lo; if (hi > s->gw[best].hi) s->gw[best].hi = hi; }
     else { s->gw[s->ngw].lo = lo; s->gw[s->ngw].hi = hi; s->ngw++; }
+}
+void vk_readback_wrote(uint64_t a, uint64_t n) {
+    if (n && a <= UINT64_MAX - n) sub_gpu_wrote(a, n);
 }
 void vk_gpu_wrote(uint64_t a, uint64_t n) {
     if (!n || a > UINT64_MAX - n) return;

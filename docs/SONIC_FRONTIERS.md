@@ -163,3 +163,43 @@ The production-helper regression covers both vendor defaults, explicit on/off,
 missing cache operations and allocation fallback. Device profiling and another
 Frontiers run are still needed to establish how much this improves frame time;
 memory pressure and GPU workload can independently limit this 4 GB tablet.
+
+
+## Reference renderer comparison: range-based completion work
+
+Compared `mymes1/droidplay-core` branch `arena/16159649-droidplay-core` at
+`57a57d6f84bb8173a5bdf821e95e247876dc4370`. Its renderer is not a drop-in core:
+`dm/android/gfx_vk_draw.inc` stage_set copies storage-buffer resource ranges
+into its submission arena, snapshots those ranges and queues `wb_t` records
+only for written bindings. `dm/android/gfx_vk.c` applies those records after
+completion; `gfx_vk_readback.inc` can stage slow arena reads through cached
+transfer-destination memory. It does not implement this target's full copied
+memory-pool scan after each ordinary submission.
+
+In this target, `pools_copy_back` defaulted to full-pool scans and invalidation.
+The optional bounded mode was disabled by any storage buffer and even by
+linear-target copies whose stride-aware write extent was already known.
+With large copied pools this adds CPU work to every submission's critical path:
+`begin_segment` waits for prior copy-back before uploading the shared pools.
+Changing the allocation cache policy alone cannot remove those scans or waits.
+
+The bounded mode now defaults on for Mali (`DM_VK_POOL_READBACK_RANGES=0`
+restores the old behavior). Descriptor construction records every SSBO's full
+aligned range, including the alignment prefix, in graphics and compute stages;
+previously only compute's non-UBO-pointer storage was recorded. The per-submission
+set memo retains those notes within its epoch. Missing sizes conservatively
+cover the remainder of the chunk, never a guessed smaller extent. Known
+linear-target writes keep their exact extent; texture-to-buffer copies cover
+the entire destination chunk tail. Neither unnecessarily disables range mode.
+Unknown/storage-image descriptors and transform feedback still fall back to
+full merging. The bounded range table coalesces rather than dropping writes.
+
+Existing copy-back tests exercise no-write submissions, small disjoint writes,
+CPU/GPU concurrent byte preservation, clipping, atom-aligned invalidation,
+baseline reuse, and unknown-writer fallback. New production-descriptor tests
+cover all six stages, all three storage-address sources, alignment prefixes,
+missing sizes, chunk-tail clipping and unbound descriptors. The UNORM RoundEven
+black-material fix is unchanged. This is a targeted reduction of excess work,
+not a port of the reference's arena architecture; shared-pool serialization,
+unknown-writer fallback and GPU cost remain. Without fresh device logs or
+profiling, the precise bottleneck and normal-speed gameplay are not verified.

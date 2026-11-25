@@ -42,6 +42,7 @@ static void crumb_mark(int n) { abort(); }
 void vk_pass_ts(int a, uint32_t b, uint32_t c, uint32_t d, uint32_t e) {}
 int vk_readback_ranges(void) { return 0; }
 void vk_readback_unknown(void) { abort(); }
+void vk_readback_wrote(uint64_t a, uint64_t n) {}
 void vk_gpu_wrote(uint64_t a, uint64_t n) {}
 static void sub_gpu_wrote(uint64_t a, uint64_t n) {}
 uint64_t vk_fence_done(void) { return 0; }
